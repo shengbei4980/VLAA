@@ -230,7 +230,7 @@ describe("human review gate", () => {
     act(() => button("开始测试轮廓").click());
     expect(onDirtyChange).toHaveBeenLastCalledWith(true);
     expect(container.textContent).toContain("请先完成轮廓或取消本次绘制");
-    for (const label of ["保存复核草稿", "导出 LabelMe JSON", "保存标注预览 PNG", "确认整图并应用", "撤销", "重做"])
+    for (const label of ["保存复核草稿", "保存修改", "导出 LabelMe JSON", "保存标注预览 PNG", "确认整图并应用", "撤销", "重做"])
       expect(button(label).disabled).toBe(true);
     expect(container.querySelector<HTMLSelectElement>('[aria-label="对象 1 类别"]')!.disabled).toBe(true);
     expect(button("完成测试轮廓").disabled).toBe(false);
@@ -293,6 +293,34 @@ describe("human review gate", () => {
     expect(vi.mocked(workflowApi.saveDraft).mock.calls[0][2].objects[0]).toMatchObject({
       object_id: "obj-1", mask: edited, mask_ref: "masks/manual.json", provenance_json: { backend: "managed" },
     });
+  });
+
+  it("saves from the canvas toolbar and restores the added mask when reopened", async () => {
+    let storedReview = structuredClone(review);
+    vi.mocked(workflowApi.review).mockImplementation(async () => storedReview);
+    vi.mocked(workflowApi.saveDraft).mockImplementation(async (_id, revision, value) => {
+      storedReview = { ...review, revision: revision + 1, payload: structuredClone(value) };
+      return storedReview;
+    });
+    await render(segmentProfile);
+    expect(button("保存修改").disabled).toBe(true);
+    act(() => button("开始测试轮廓").click());
+    act(() => button("完成测试轮廓").click());
+    const savebar = container.querySelector('[aria-label="保存补充标注"]')!;
+    expect(savebar.textContent).toContain("有未保存的补画或修改");
+    await act(async () => button("保存修改").click());
+    expect(storedReview.payload.objects[1]).toMatchObject({ mask_ref: "masks/manual.json" });
+    expect(savebar.textContent).toContain("当前修改已保存至工具 · 修订 2");
+    expect(button("保存修改").disabled).toBe(true);
+
+    // Exercise managed-mask hydration after leaving and opening the saved review.
+    delete storedReview.payload.objects[1].mask;
+    await act(async () => root.render(<ArtifactReviewView key="reopened" reviewId="review-1" profile={segmentProfile} onBack={vi.fn()} onSaved={vi.fn()} />));
+    const reopened = maskCanvasProps.mock.lastCall![0] as MaskCanvasProps;
+    expect(reopened.payload.objects).toHaveLength(2);
+    expect(reopened.payload.objects[1]).toMatchObject({ object_id: "drawn-object", mask: manualMask(), mask_ref: "masks/manual.json" });
+    expect(container.querySelector('[aria-label="保存补充标注"]')?.textContent).toContain("修订 2");
+    expect(button("保存修改").disabled).toBe(true);
   });
 
   it("refines the selected object's class and retains its original provenance", async () => {
@@ -705,9 +733,11 @@ describe("human review gate", () => {
     vi.mocked(workflowApi.saveDraft).mockRejectedValue(new Error("版本冲突"));
     await render();
     act(() => button("修改框和类别").click());
-    await act(async () => button("保存复核草稿").click());
+    await act(async () => button("保存修改").click());
     expect(container.textContent).toContain("版本冲突");
     expect(container.textContent).toContain("未保存修改");
+    expect(container.querySelector('[aria-label="保存补充标注"]')?.textContent).toContain("版本冲突");
+    expect(button("保存修改").disabled).toBe(false);
     expect(workflowApi.decide).not.toHaveBeenCalled();
   });
 });

@@ -560,6 +560,37 @@
 .workflow-review-main {
   min-width: 0;
 }
+.starter-main:has(> .workflow-review-page) {
+  overflow: clip;
+}
+.workflow-review-savebar {
+  position: sticky;
+  top: 76px;
+  z-index: 12;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin-bottom: 16px;
+  padding: 12px 16px;
+  border: 1px solid #c8d5fa;
+  border-radius: 9px;
+  background: #f8faff;
+  box-shadow: 0 2px 8px rgb(30 58 138 / 8%);
+}
+.workflow-review-savebar p {
+  margin: 4px 0 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.workflow-review-save-hint,
+.workflow-review-save-error {
+  flex-basis: 100%;
+  overflow-wrap: anywhere;
+}
+.workflow-review-save-hint { color: #64748b; }
+.workflow-review-save-error { color: #b91c1c; }
 .workflow-review-sidebar {
   min-width: 0;
   overflow-wrap: anywhere;

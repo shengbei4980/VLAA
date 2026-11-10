@@ -121,6 +121,7 @@ export function ArtifactReviewView({
   const [newObjectRequest, setNewObjectRequest] = useState(0);
   const [pendingDrawing, setPendingDrawing] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState<ReactNode>("");
   const [coverage, setCoverage] = useState(false);
@@ -227,6 +228,7 @@ export function ArtifactReviewView({
   };
   const save = async () => {
     setBusy(true);
+    setSaving(true);
     setError("");
     try {
       await savePayload();
@@ -239,7 +241,10 @@ export function ArtifactReviewView({
             : "保存失败，草稿保留在当前页面",
         );
     } finally {
-      if (mounted.current) setBusy(false);
+      if (mounted.current) {
+        setBusy(false);
+        setSaving(false);
+      }
     }
   };
   const decide = async (
@@ -745,6 +750,31 @@ export function ArtifactReviewView({
           </section>
           <div className="workflow-review-grid">
             <div className="workflow-review-main">
+              <section className="workflow-review-savebar" aria-label="保存补充标注">
+                <div>
+                  <strong>保存补充标注</strong>
+                  <p role="status" aria-live="polite">
+                    {saving
+                      ? "正在保存修改…"
+                      : readOnly
+                        ? "人工决定已保存"
+                        : pendingDrawing
+                          ? "请先完成轮廓或取消本次绘制"
+                          : dirty
+                            ? "有未保存的补画或修改"
+                            : `当前修改已保存至工具 · 修订 ${review.revision}`}
+                  </p>
+                </div>
+                <button
+                  className="button primary"
+                  disabled={editLocked || !dirty}
+                  onClick={() => void save()}
+                >
+                  {saving ? "正在保存…" : "保存修改"}
+                </button>
+                <p className="workflow-review-save-hint">保存后，可从数据集的“继续 LLM 标注复核”重新打开。用于训练前，请完成整图确认。</p>
+                {error && <p className="workflow-review-save-error">{error}</p>}
+              </section>
               <div className="workflow-actions">
                 <label>
                   当前绘制类别
