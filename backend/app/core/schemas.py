@@ -154,6 +154,10 @@ class ImageItemResponse(ORMModel):
     height: int
     split: SplitName
     status: str
+    annotation_revision: int = 0
+    review_status: str = "pending"
+    roi_mask_ref: str | None = None
+    ignore_mask_ref: str | None = None
     source_type: str
     source_file: str | None
     source_group_id: str | None
@@ -200,13 +204,16 @@ class AnnotationInput(BaseModel):
     polygon: list[tuple[float, float]] | None = None
     obb: OBB | None = None
     source: AnnotationSource = "manual"
+    object_id: str | None = Field(default=None, max_length=128)
+    mask_ref: str | None = Field(default=None, max_length=128)
+    provenance_json: dict = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def shape_matches_type(self) -> "AnnotationInput":
         if self.type == "bbox" and self.bbox is None:
             raise ValueError("bbox is required for bbox annotations")
-        if self.type == "polygon" and self.polygon is None:
-            raise ValueError("polygon is required for polygon annotations")
+        if self.type == "polygon" and self.polygon is None and self.mask_ref is None:
+            raise ValueError("polygon or mask_ref is required for polygon annotations")
         if self.type == "obb" and self.obb is None:
             raise ValueError("obb is required for oriented bounding-box annotations")
         return self
@@ -221,6 +228,9 @@ class AnnotationInput(BaseModel):
 
 class ReplaceAnnotationsRequest(BaseModel):
     annotations: list[AnnotationInput] = Field(max_length=10000)
+    expected_revision: int | None = Field(default=None, ge=0)
+    roi_mask_ref: str | None = Field(default=None, max_length=128)
+    ignore_mask_ref: str | None = Field(default=None, max_length=128)
 
 
 class AnnotationResponse(BaseModel):
@@ -236,6 +246,9 @@ class AnnotationResponse(BaseModel):
     polygon: list[tuple[float, float]] | None = None
     obb: OBB | None = None
     source: AnnotationSource
+    object_id: str | None = None
+    mask_ref: str | None = None
+    provenance_json: dict = Field(default_factory=dict)
     created_at: datetime
     updated_at: datetime
 

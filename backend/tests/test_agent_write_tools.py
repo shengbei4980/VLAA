@@ -9,6 +9,8 @@ from time import monotonic, sleep
 import pytest
 from PIL import Image
 
+from workflow_test_helpers import confirm_image, install_fake_yolo
+
 from app.agent.providers.mock import _plan_tools
 from app.core.models import AgentApproval, TrainingTask
 from app.core.time import utc_now
@@ -21,26 +23,8 @@ def image_bytes() -> bytes:
     return output.getvalue()
 
 
-def fake_yolo(path) -> None:
-    path.write_text(
-        """#!/bin/sh
-project=""
-name="run"
-for arg in "$@"; do
-  case "$arg" in
-    project=*) project="${arg#project=}" ;;
-    name=*) name="${arg#name=}" ;;
-  esac
-done
-mkdir -p "$project/$name/weights"
-printf 'epoch,metrics/mAP50(B)\\n0,0.81\\n' > "$project/$name/results.csv"
-printf 'fake best' > "$project/$name/weights/best.pt"
-printf 'fake last' > "$project/$name/weights/last.pt"
-printf '1/1\\n'
-""",
-        encoding="utf-8",
-    )
-    path.chmod(0o755)
+def fake_yolo(path, monkeypatch):
+    install_fake_yolo(path, monkeypatch)
 
 
 def prepared_dataset(client, task_type: str = "detect") -> tuple[str, str]:
@@ -61,6 +45,7 @@ def prepared_dataset(client, task_type: str = "detect") -> tuple[str, str]:
             json={"annotations": [{"type": "bbox", "class_id": label, "bbox": {"x": 5, "y": 5, "width": 25, "height": 20}}]},
         )
         assert response.status_code == 200, response.text
+        confirm_image(client, dataset_id, image["id"])
     return dataset_id, label
 
 
@@ -86,7 +71,7 @@ def test_mock_plans_write_tools():
 @pytest.mark.parametrize("wait_for_completion", [True, False])
 def test_write_tool_pauses_for_approval_without_creating_task(client, tmp_path, monkeypatch, wait_for_completion):
     executable = tmp_path / "fake-yolo"
-    fake_yolo(executable)
+    fake_yolo(executable, monkeypatch)
     monkeypatch.setenv("YWA_YOLO_EXECUTABLE", str(executable))
     dataset_id, _ = prepared_dataset(client)
 
@@ -124,7 +109,7 @@ def test_write_tool_pauses_for_approval_without_creating_task(client, tmp_path, 
 
 def test_approve_creates_training_task_once(client, tmp_path, monkeypatch):
     executable = tmp_path / "fake-yolo"
-    fake_yolo(executable)
+    fake_yolo(executable, monkeypatch)
     monkeypatch.setenv("YWA_YOLO_EXECUTABLE", str(executable))
     dataset_id, _ = prepared_dataset(client)
 
@@ -157,7 +142,7 @@ def test_approve_creates_training_task_once(client, tmp_path, monkeypatch):
 
 def test_approve_accepts_edited_payload(client, tmp_path, monkeypatch):
     executable = tmp_path / "fake-yolo"
-    fake_yolo(executable)
+    fake_yolo(executable, monkeypatch)
     monkeypatch.setenv("YWA_YOLO_EXECUTABLE", str(executable))
     dataset_id, _ = prepared_dataset(client)
 
@@ -184,7 +169,7 @@ def test_approve_accepts_edited_payload(client, tmp_path, monkeypatch):
 
 def test_reject_approval_cancels_run_without_task(client, tmp_path, monkeypatch):
     executable = tmp_path / "fake-yolo"
-    fake_yolo(executable)
+    fake_yolo(executable, monkeypatch)
     monkeypatch.setenv("YWA_YOLO_EXECUTABLE", str(executable))
     dataset_id, _ = prepared_dataset(client)
 
@@ -208,7 +193,7 @@ def test_reject_approval_cancels_run_without_task(client, tmp_path, monkeypatch)
 
 def test_expired_approval_cannot_execute(client, tmp_path, monkeypatch):
     executable = tmp_path / "fake-yolo"
-    fake_yolo(executable)
+    fake_yolo(executable, monkeypatch)
     monkeypatch.setenv("YWA_YOLO_EXECUTABLE", str(executable))
     dataset_id, _ = prepared_dataset(client)
 
@@ -292,7 +277,7 @@ def test_approve_auto_annotation_after_confirmation(client, monkeypatch):
 
 def test_rejected_approval_cannot_be_approved_later(client, tmp_path, monkeypatch):
     executable = tmp_path / "fake-yolo"
-    fake_yolo(executable)
+    fake_yolo(executable, monkeypatch)
     monkeypatch.setenv("YWA_YOLO_EXECUTABLE", str(executable))
     dataset_id, _ = prepared_dataset(client)
 
@@ -343,7 +328,7 @@ def test_write_propose_does_not_call_training_create(client, monkeypatch):
 
 def test_approve_resumes_reserved_task_id_without_duplicate(client, tmp_path, monkeypatch):
     executable = tmp_path / "fake-yolo"
-    fake_yolo(executable)
+    fake_yolo(executable, monkeypatch)
     monkeypatch.setenv("YWA_YOLO_EXECUTABLE", str(executable))
     dataset_id, _ = prepared_dataset(client)
 
@@ -381,7 +366,7 @@ def test_approve_resumes_reserved_task_id_without_duplicate(client, tmp_path, mo
 
 def test_approve_strips_tampered_payload_keys(client, tmp_path, monkeypatch):
     executable = tmp_path / "fake-yolo"
-    fake_yolo(executable)
+    fake_yolo(executable, monkeypatch)
     monkeypatch.setenv("YWA_YOLO_EXECUTABLE", str(executable))
     dataset_id, _ = prepared_dataset(client)
     session_id = client.post("/api/agent/sessions", json={}).json()["id"]
@@ -414,7 +399,7 @@ def test_submitted_training_finishes_before_client_cleanup(client, tmp_path, mon
     from app.training.runtime.runner import TrainingRunner
 
     executable = tmp_path / "fake-yolo"
-    fake_yolo(executable)
+    fake_yolo(executable, monkeypatch)
     monkeypatch.setenv("YWA_YOLO_EXECUTABLE", str(executable))
     dataset_id, _ = prepared_dataset(client)
     entered, release, finished = Event(), Event(), Event()

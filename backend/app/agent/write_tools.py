@@ -24,7 +24,8 @@ from app.core.task_types import TaskType
 ToolHandler = Callable[[Session, dict[str, Any]], dict[str, Any]]
 
 WRITE_TOOL_NAMES = frozenset(
-    {"create_training_task", "create_model_evaluation", "create_auto_annotation_task"}
+    {"create_training_task", "create_model_evaluation", "create_auto_annotation_task",
+     "create_workflow_run", "resume_workflow_run", "cancel_workflow_run"}
 )
 
 
@@ -42,6 +43,13 @@ def normalize_write_payload(tool_name: str, payload: dict[str, Any] | None) -> d
     raw = dict(payload or {})
     if tool_name not in WRITE_TOOL_NAMES:
         raise ValidationError("unsupported_agent_write_tool", f"Unsupported write tool: {tool_name}")
+    if tool_name in {"create_workflow_run", "resume_workflow_run", "cancel_workflow_run"}:
+        from app.agent.workflow_tools import normalize_workflow_payload
+
+        try:
+            return normalize_workflow_payload(tool_name, raw)
+        except PydanticValidationError as exc:
+            raise _pydantic_error(exc) from exc
     if tool_name == "create_training_task":
         try:
             parsed = TrainingTaskCreate.model_validate(
@@ -155,6 +163,19 @@ def preflight_write_payload(
 
     training = training_service or TrainingService(session_factory, storage, training_queue)
     models = model_service or ModelService(storage)
+    if tool_name in {"create_workflow_run", "resume_workflow_run", "cancel_workflow_run"}:
+        from app.agent.workflow_tools import build_workflow_service
+        from app.workflow.schemas import RunCreate
+
+        service = build_workflow_service(storage, session_factory)
+        if tool_name == "create_workflow_run":
+            request = RunCreate.model_validate({key: value for key, value in payload.items() if key not in {"action", "preview", "reserved_task_id"}})
+            service.get_profile(request.profile_id)
+            service.get_template(request.template_id)
+            get_dataset(session, request.dataset_id)
+        else:
+            service.get_run(payload["run_id"])
+        return
     if tool_name == "create_training_task":
         create_payload = TrainingTaskCreate.model_validate(
             {key: value for key, value in payload.items() if key not in {"action", "preview", "reserved_task_id"}}
@@ -301,6 +322,10 @@ def register_write_tools(
 
 
 def reserved_id_prefix(tool_name: str) -> str:
+    if tool_name == "create_workflow_run":
+        return "wrun"
+    if tool_name in {"resume_workflow_run", "cancel_workflow_run"}:
+        return "wcontrol"
     if tool_name == "create_training_task":
         return "train"
     if tool_name == "create_model_evaluation":

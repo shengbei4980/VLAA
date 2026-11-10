@@ -625,6 +625,7 @@ def build_default_registry(
     training_service: TrainingService | None = None,
     model_service: ModelService | None = None,
     session_factory=None,
+    settings=None,
 ) -> AgentToolRegistry:
     registry = AgentToolRegistry()
     if storage is None:
@@ -659,4 +660,7 @@ def build_default_registry(
         model_service=model_service,
         session_factory=session_factory,
     )
+    from app.agent.workflow_tools import register_workflow_tools
+
+    register_workflow_tools(registry, storage, session_factory, settings)
     return registry

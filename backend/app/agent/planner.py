@@ -1,4 +1,4 @@
-"""Community RuleBasedPlanner — trimmed from upstream without Workflow/AL/Deployment/Inspection."""
+"""Allowlisted deterministic plans for local tools and versioned workflows."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from app.agent.provider import ProviderToolCall
 from app.agent.write_tools import WRITE_TOOL_NAMES
 
 
-_ID_RE = re.compile(r"\b((?:ds|train|eval)_[a-f0-9]+|model_[a-zA-Z0-9_]+)\b", re.IGNORECASE)
+_ID_RE = re.compile(r"\b((?:ds|train|eval|wrun)_[a-f0-9]+|model_[a-zA-Z0-9_]+)\b", re.IGNORECASE)
 
 # Upstream dotted names → Starter OpenAI-safe names.
 _PRIMARY_ALIASES: dict[str, tuple[str, ...]] = {
@@ -35,6 +35,11 @@ _PRIMARY_ALIASES: dict[str, tuple[str, ...]] = {
     "create_training_task": (),
     "create_model_evaluation": (),
     "create_auto_annotation_task": (),
+    "workflow_catalog": (),
+    "workflow_status": (),
+    "create_workflow_run": (),
+    "resume_workflow_run": (),
+    "cancel_workflow_run": (),
 }
 
 
@@ -66,17 +71,21 @@ class RuleBasedPlanner:
         eval_ids = [item for item in ids if item.lower().startswith("eval_")]
         allow = available
 
-        # Reject out-of-scope automation keywords; still offer a safe read tool.
         if self._mentions_out_of_scope(text):
             step = self._step("global_summary", {}, allow)
-            return AgentStructuredPlan(
-                intent="out_of_scope_hint",
-                steps=[step] if step else [],
-                needs_confirmation=False,
-                risks=[
-                    "Community Agent 不支持 Workflow、主动学习、Deployment、Inspection 或无人值守自动串联。"
-                ],
-            )
+            return AgentStructuredPlan(intent="out_of_scope_hint", steps=[step] if step else [],
+                needs_confirmation=False, risks=["当前可使用受控图像工作流。主动学习、定时触发和远程部署需要对应能力适配。"])
+
+        workflow_ids = [item for item in ids if item.lower().startswith("wrun_")]
+        if workflow_ids or any(token in text for token in ("workflow", "工作流")):
+            name, arguments = "workflow_catalog", {}
+            if workflow_ids:
+                name, arguments = "workflow_status", {"run_id": workflow_ids[0]}
+                if any(token in text for token in ("取消", "cancel", "停止")):
+                    name = "cancel_workflow_run"
+                elif any(token in text for token in ("恢复", "resume", "重试")):
+                    name = "resume_workflow_run"
+            return self._single(self._step(name, arguments, allow))
 
         wants_write_training = self._wants_training_write(text)
         wants_write_eval = any(
@@ -406,7 +415,6 @@ class RuleBasedPlanner:
     @staticmethod
     def _mentions_out_of_scope(text: str) -> bool:
         keywords = (
-            "workflow",
             "主动学习",
             "active learning",
             "deployment",
@@ -417,7 +425,6 @@ class RuleBasedPlanner:
             "定时",
             "触发器",
             "无人值守",
-            "自动串联",
         )
         return any(word in text for word in keywords)
 

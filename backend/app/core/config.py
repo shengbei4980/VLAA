@@ -4,6 +4,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from app.storage_settings.bootstrap import startup_paths
+
 
 def _resolve_path(raw: str | None, default: Path, project_root: Path) -> Path:
     value = Path(raw).expanduser() if raw else default
@@ -49,9 +51,9 @@ class Settings:
     def from_env(cls) -> "Settings":
         backend_root = Path(__file__).resolve().parents[2]
         project_root = backend_root.parent
-        data_dir = _resolve_path(os.getenv("YWA_DATA_DIR"), project_root / "data", project_root)
+        data_dir, selected_database_url = startup_paths(project_root)
         import_root = _resolve_path(os.getenv("YWA_IMPORT_ROOT"), data_dir / "imports", project_root)
-        database_url = os.getenv("YWA_DATABASE_URL") or f"sqlite:///{data_dir / 'yolowebagent-starter.db'}"
+        database_url = selected_database_url
         origins = tuple(
             item.strip()
             for item in os.getenv("YWA_CORS_ORIGINS", "http://127.0.0.1:5173,http://localhost:5173").split(",")

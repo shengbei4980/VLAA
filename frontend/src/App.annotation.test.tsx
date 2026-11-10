@@ -141,6 +141,20 @@ describe("AnnotationView persistence", () => {
     expect(onSave).toHaveBeenCalledWith([]);
   });
 
+  it("leaves the whole object intact when its canvas already handled Delete", () => {
+    const onSave = vi.fn();
+    act(() => {
+      root?.render(<AnnotationView dataset={dataset} image={image} classes={classes} annotations={[annotation]} activeClassId="cls-1" onClassChange={vi.fn()} onBack={vi.fn()} onSave={onSave} onSam={vi.fn()} onSamPoints={vi.fn()} busy={false} />);
+    });
+    act(() => container?.querySelector<HTMLDivElement>(".shape-row")?.click());
+    const event = new KeyboardEvent("keydown", { key: "Delete", cancelable: true });
+    event.preventDefault();
+    act(() => window.dispatchEvent(event));
+    const save = Array.from(container?.querySelectorAll<HTMLButtonElement>("button") ?? []).find((item) => item.textContent === "保存标注");
+    act(() => save?.click());
+    expect(onSave.mock.calls[0][0]).toHaveLength(1);
+  });
+
   it("keeps previous and next navigation available by button and keyboard", () => {
     const onPrevious = vi.fn();
     const onNext = vi.fn();

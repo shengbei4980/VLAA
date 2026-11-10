@@ -17,7 +17,7 @@ def health() -> dict[str, str]:
 def info(settings: Settings = Depends(get_settings)) -> dict[str, object]:
     sam = SamSettingsService(settings).get()
     return {
-        "name": "YoloWebAgentStarter",
+        "name": "Vision-Language Automated Annotation",
         "edition": "community",
         "version": "0.1.0-dev",
         "task_types": ["detect", "segment", "obb", "classify"],

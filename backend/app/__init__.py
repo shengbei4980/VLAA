@@ -1,2 +1,2 @@
-"""YoloWebAgentStarter backend."""
+"""Vision-Language Automated Annotation (VLAA) backend."""
 

@@ -31,6 +31,10 @@ export interface ImageItem {
   height: number;
   split: SplitName;
   status: string;
+  annotation_revision?: number;
+  review_status?: string;
+  roi_mask_ref?: string | null;
+  ignore_mask_ref?: string | null;
   source_type?: string;
   source_file?: string | null;
   source_group_id?: string | null;
@@ -113,6 +117,9 @@ export interface Annotation {
   polygon: [number, number][] | null;
   obb: OBB | null;
   source: "manual" | "imported" | "sam" | "auto";
+  mask_ref?: string | null;
+  object_id?: string | null;
+  provenance_json?: Record<string, unknown> | null;
   created_at: string;
   updated_at: string;
 }
@@ -122,6 +129,8 @@ export interface SamPrediction {
   class_id: string;
   mask_id: string;
   polygon: [number, number][];
+  mask_ref?: string;
+  mask_rle?: import("./workflows").MaskRle;
   score: number;
   backend_used: string;
   device: string | null;
@@ -330,6 +339,7 @@ export interface ModelVersion {
   map50_95: number | null;
   metrics_json: Record<string, number>;
   notes: string;
+  class_schema_json?: Array<{ id: string; index: number; name: string; color?: string }>;
   archived_at: string | null;
   created_at: string;
   updated_at: string;
@@ -365,7 +375,7 @@ export interface AutoAnnotationTask {
   finished_at: string | null;
 }
 export interface AutoAnnotationLog { task_id: string; logs: string; line_count: number; }
-export interface ModelEvaluationRecord { id: string; model_id: string; dataset_id: string; split: SplitName; status: "pending" | "running" | "completed" | "failed"; confidence: number; iou: number; result_json: { split?: SplitName; task_type?: TaskType; metrics?: Record<string, number>; artifacts?: Record<string, string | null>; error_samples?: Array<{ image_file?: string; class_index?: number; confidence?: number; type: string; message: string }> }; error_message: string | null; export_path: string | null; data_path: string | null; run_dir: string | null; logs_path: string | null; created_at: string; started_at: string | null; finished_at: string | null; }
+export interface ModelEvaluationRecord { id: string; model_id: string; dataset_id: string; split: SplitName; status: "pending" | "running" | "completed" | "failed" | "stopped"; confidence: number; iou: number; result_json: { split?: SplitName; task_type?: TaskType; metrics?: Record<string, number>; artifacts?: Record<string, string | null>; error_samples?: Array<{ image_file?: string; class_index?: number; confidence?: number; type: string; message: string }> }; error_message: string | null; export_path: string | null; data_path: string | null; run_dir: string | null; logs_path: string | null; created_at: string; started_at: string | null; finished_at: string | null; }
 
 export type AgentRunStatus = "pending" | "running" | "awaiting_approval" | "completed" | "failed" | "cancelled";
 export type AgentMessageRole = "user" | "assistant" | "system" | "tool";

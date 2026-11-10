@@ -27,6 +27,7 @@ class ModelVersionResponse(BaseModel):
     format: ModelFormat
     task_type: TaskType
     engine_type: str
+    class_schema_json: list[dict] = Field(default_factory=list)
     model_path: str
     base_model: str | None
     status: ModelStatus
@@ -92,7 +93,7 @@ class ModelEvaluationRecordResponse(BaseModel):
     model_id: str
     dataset_id: str
     split: Literal["train", "val", "test"]
-    status: Literal["pending", "running", "completed", "failed"]
+    status: Literal["pending", "running", "completed", "failed", "stopped"]
     confidence: float
     iou: float
     result_json: dict

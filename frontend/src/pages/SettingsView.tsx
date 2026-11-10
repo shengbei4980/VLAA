@@ -3,8 +3,10 @@ import { api } from "../api/client";
 import type { AppLocale } from "../locale";
 import { saveLocale } from "../locale";
 import type { LLMAuthScheme, LLMSettings, SamSettings, TrainingDevice } from "../types";
+import { VisionSettingsPanel } from "./VisionSettingsPanel";
+import { StorageSettingsPanel } from "./StorageSettingsPanel";
 
-export type SettingsTab = "llm" | "sam" | "language";
+export type SettingsTab = "llm" | "sam" | "vision" | "storage" | "language";
 
 type LlmFormState = LLMSettings & { api_key: string };
 
@@ -14,19 +16,19 @@ const copy = {
   zh: {
     eyebrow: "WORKSPACE SETTINGS",
     title: "设置",
-    subtitle: "管理此设备上的 Agent LLM、辅助标注与工作台偏好。配置保存在本地 data 目录，不会写入 SQLite。",
+    subtitle: "按用途连接任务助手、视觉标注与轮廓分割模型，并设置保存位置。首次自动标注请先配置“视觉模型接入”。",
     local: "本地",
     llmNav: "Agent LLM",
-    llmNavDescription: "Provider、模型与 API Key",
+    llmNavDescription: "任务对话、数据查询与流程安排",
     samNav: "SAM 辅助",
-    samNavDescription: "模型、设备与建议方式",
+    samNavDescription: "根据框选或点提示生成对象轮廓",
     languageNav: "语言",
     languageNavDescription: "工作台显示偏好",
-    llmTitle: "Agent LLM",
-    llmSubtitle: "对齐上游设置页：启用后使用 OpenAI 兼容接口；关闭则使用本地规则规划器。密钥只保存在 settings.json。",
-    enabled: "启用 LLM Provider",
-    enabledHint: "关闭时 Agent 使用本地 mock / 规则规划，不发起远端调用。",
-    provider: "Provider",
+    llmTitle: "任务助手（Agent LLM）",
+    llmSubtitle: "用于智能体页面的任务对话、查询数据与安排工作流程。图片中的对象识别和标注检查请在“视觉模型接入”中配置。",
+    enabled: "启用大模型任务助手",
+    enabledHint: "开启后通过所填接口调用语言模型。关闭时使用本地规则处理支持的任务指令。",
+    provider: "服务类型（Provider）",
     model: "模型",
     apiBase: "API Base URL",
     apiKey: "API Key",
@@ -34,38 +36,38 @@ const copy = {
     apiKeyOptional: "可选：本地服务可不填",
     authScheme: "鉴权方式",
     authHeaderName: "自定义 Header 名",
-    authHeaderHint: "仅 auth_scheme=header 时需要，例如 X-Api-Key",
-    temperature: "Temperature",
+    authHeaderHint: "选择自定义 Header 鉴权时填写，例如 X-Api-Key。",
+    temperature: "回答随机性（Temperature）",
     timeout: "请求超时（秒）",
     advanced: "高级",
-    plannerTitle: "规划预设",
-    plannerSubtitle: "仅调整 temperature，需点保存后生效。",
-    cost: "省成本",
+    plannerTitle: "回答方式",
+    plannerSubtitle: "预设会调整回答随机性（Temperature），保存后生效。",
+    cost: "更稳妥",
     balanced: "均衡",
-    quality: "高质量",
+    quality: "更灵活",
     test: "测试连接",
     testing: "测试中…",
     save: "保存 LLM 设置",
     saved: "LLM 设置已保存",
     llmReady: "已启用",
     llmLocal: "本地规则",
-    llmFooter: "测试不会落盘。空 API Key 在保存时保留已有密钥。",
+    llmFooter: "测试连接使用当前表单，保存后在智能体页面生效。已有 API Key 可留空保留。",
     samTitle: "SAM 辅助标注",
-    samSubtitle: "配置 segment 标注页使用的交互式 SAM 建议。建议结果仍需人工确认后保存。",
+    samSubtitle: "根据框选区域或正负点生成对象轮廓，辅助修边，并为分割工作流生成掩膜。生成后请检查边界再保存。",
     samEnabled: "启用 SAM 辅助",
     modelSam: "模型权重或模型 ID",
     modelHint: "可填写本地 .pt 路径或 Ultralytics 可识别的模型名，例如 sam_b.pt。",
     device: "推理设备",
     imageSize: "推理尺寸",
     fallback: "未配置模型时",
-    box: "使用框形 review-only 建议",
-    disabled: "禁用回退",
+    box: "使用矩形区域建议（待人工修边）",
+    disabled: "要求先配置模型",
     saveSam: "保存 SAM 设置",
     savedSam: "SAM 设置已保存",
     ready: "已配置真实模型",
     fallbackReady: "使用框形建议",
     disabledStatus: "已关闭",
-    samFooter: "SAM 只对 segment 数据集开放。",
+    samFooter: "用于分割任务（segment）的轮廓标注，生成结果在人工确认后应用。",
     languageTitle: "语言设置",
     languageSubtitle: "切换工作台界面语言。偏好只保存在本机浏览器中。",
     displayLanguage: "显示语言",
@@ -93,18 +95,18 @@ const copy = {
   en: {
     eyebrow: "WORKSPACE SETTINGS",
     title: "Settings",
-    subtitle: "Manage Agent LLM, assisted annotation, and workspace preferences. Stored in the local data directory — never in SQLite.",
+    subtitle: "Connect models for task assistance, visual annotation and object outlines, then choose where to save results. Start with Vision model access for automatic annotation.",
     local: "Local",
     llmNav: "Agent LLM",
-    llmNavDescription: "Provider, model, and API key",
+    llmNavDescription: "Task chat, data queries and workflow planning",
     samNav: "SAM assist",
-    samNavDescription: "Model, device, and proposal behavior",
+    samNavDescription: "Create outlines from boxes or point prompts",
     languageNav: "Language",
     languageNavDescription: "Workspace display preference",
-    llmTitle: "Agent LLM",
-    llmSubtitle: "Upstream-aligned settings: enable OpenAI-compatible chat; disable for the local rule planner. Keys live in settings.json only.",
+    llmTitle: "Task assistant (Agent LLM)",
+    llmSubtitle: "Powers task conversations, data queries and workflow planning on the Agent page. Configure image recognition and annotation checks under Vision model access.",
     enabled: "Enable LLM provider",
-    enabledHint: "When off, Agent uses the local mock / rule planner and does not call a remote LLM.",
+    enabledHint: "When enabled, the assistant calls your model endpoint. When off, local rules handle supported task instructions.",
     provider: "Provider",
     model: "Model",
     apiBase: "API Base URL",
@@ -117,34 +119,34 @@ const copy = {
     temperature: "Temperature",
     timeout: "Request timeout (seconds)",
     advanced: "Advanced",
-    plannerTitle: "Planner presets",
-    plannerSubtitle: "Adjusts temperature only; click Save to persist.",
-    cost: "Cost",
+    plannerTitle: "Response style",
+    plannerSubtitle: "Presets adjust response randomness (Temperature). Save to apply.",
+    cost: "More consistent",
     balanced: "Balanced",
-    quality: "Quality",
+    quality: "More flexible",
     test: "Test connection",
     testing: "Testing…",
     save: "Save LLM settings",
     saved: "LLM settings saved",
     llmReady: "Enabled",
     llmLocal: "Local rules",
-    llmFooter: "Tests do not persist. An empty API key keeps the existing secret on save.",
+    llmFooter: "Connection tests use this form. Save to apply it on the Agent page. Leave an existing API key blank to keep it.",
     samTitle: "SAM assisted annotation",
-    samSubtitle: "Configure interactive SAM proposals for segment annotation. Review every proposal before saving it.",
+    samSubtitle: "Generate object outlines from boxes or positive and negative points for editing and segmentation workflows. Review the boundaries before saving.",
     samEnabled: "Enable SAM assist",
     modelSam: "Model checkpoint or model id",
     modelHint: "Use a local .pt path or an Ultralytics model name such as sam_b.pt.",
     device: "Inference device",
     imageSize: "Inference size",
     fallback: "When no model is configured",
-    box: "Use box-shaped review-only proposals",
-    disabled: "Disable fallback",
+    box: "Use rectangular regions for manual refinement",
+    disabled: "Require a configured model",
     saveSam: "Save SAM settings",
     savedSam: "SAM settings saved",
     ready: "Real model configured",
     fallbackReady: "Box proposals",
     disabledStatus: "Disabled",
-    samFooter: "SAM assist is available for segment datasets only.",
+    samFooter: "Used for object outlines in segmentation tasks. Proposals are applied after human confirmation.",
     languageTitle: "Language settings",
     languageSubtitle: "Switch the workspace language. The preference is stored in this browser only.",
     displayLanguage: "Display language",
@@ -218,12 +220,14 @@ export function SettingsView({
   onLocaleChange,
   onSamSettingsChange,
   onTabChange,
+  onStorageSettingsChange,
 }: {
   tab: SettingsTab;
   locale: AppLocale;
   onLocaleChange: (locale: AppLocale) => void;
   onSamSettingsChange?: () => void;
   onTabChange: (tab: SettingsTab) => void;
+  onStorageSettingsChange?: () => void;
 }) {
   const text = copy[locale];
   return (
@@ -238,6 +242,8 @@ export function SettingsView({
       </header>
       <div className="settings-section-layout">
         <nav className="settings-section-nav" aria-label={text.title}>
+          <SettingsNavigationItem active={tab === "storage"} icon={<SamIcon />} title={locale === "zh" ? "存储位置" : "Storage locations"} description={locale === "zh" ? "数据集、模型与导出结果的保存位置" : "Save locations for datasets, models and exports"} onClick={() => onTabChange("storage")} />
+          <SettingsNavigationItem active={tab === "vision"} icon={<SamIcon />} title={locale === "zh" ? "视觉模型接入" : "Vision model access"} description={locale === "zh" ? "自动找对象、提出标注与独立检查" : "Find objects, propose labels and check annotations"} onClick={() => onTabChange("vision")} />
           <SettingsNavigationItem
             active={tab === "llm"}
             icon={<LlmIcon />}
@@ -263,7 +269,7 @@ export function SettingsView({
           />
         </nav>
         <div className="settings-section-content">
-          {tab === "llm" ? (
+          {tab === "storage" ? <StorageSettingsPanel onChanged={onStorageSettingsChange} /> : tab === "vision" ? <VisionSettingsPanel /> : tab === "llm" ? (
             <LlmSettingsPanel locale={locale} text={text} />
           ) : tab === "sam" ? (
             <SamSettingsPanel locale={locale} text={text} onSamSettingsChange={onSamSettingsChange} />

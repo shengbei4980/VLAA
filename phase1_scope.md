@@ -1,5 +1,11 @@
 # YoloWebAgentStarter Community v2 功能矩阵
 
+## 2026-11-09 用户确认的范围扩展
+
+通用图像工作流按 [修订方案](docs/plans/2026-11-09-visual-workflow-platform-plan.md)进入实施。模板与可复制任务配置档支持塔体/建筑构件、卫星 RGB、街景及壁画等项目，组合预标注、程序/视觉检查、有界修正、人工确认、冻结数据、训练、评估及下一批处理。视觉模型通过明确配置的远端 API 或本地服务接入，模型能力与质量按任务分别验证。
+
+以下 Phase 1 表格保留原始版本的范围记录。工作流、RLE mask、审核回执、快照与模型接入以本节、修订方案及最新 AGENTS.md 为准。
+
 ## 1. 定位
 
 YoloWebAgentStarter Community v2 是一个本地运行的 YOLO 数据集与训练工作台，用于完成：

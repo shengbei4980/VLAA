@@ -125,7 +125,7 @@ class AgentService:
         self.session_factory = session_factory
         self.settings = settings
         self.storage = storage
-        self.registry = registry or build_default_registry(storage, session_factory=session_factory)
+        self.registry = registry or build_default_registry(storage, session_factory=session_factory, settings=settings)
         self.training_service = training_service
         self.model_service = model_service
         self.auto_annotation_service = auto_annotation_service
@@ -554,7 +554,15 @@ class AgentService:
             )
 
         if approval.result_task_id and self._managed_task_exists(session, approval.tool_name, approval.result_task_id):
-            return self._finalize_executed_approval(session, approval_id, approval.result_task_id, now)
+            task_id = approval.result_task_id
+            if approval.tool_name == "create_workflow_run":
+                from app.workflow.models import WorkflowRun
+                task_id = session.scalar(select(WorkflowRun.id).where(
+                    (WorkflowRun.id == task_id) | (WorkflowRun.idempotency_key == task_id)))
+            elif approval.tool_name in {"resume_workflow_run", "cancel_workflow_run"}:
+                from app.workflow.models import WorkflowEvent
+                task_id = session.get(WorkflowEvent, task_id).run_id
+            return self._finalize_executed_approval(session, approval_id, task_id, now)
 
         if not approval.result_task_id:
             raise ConflictError("agent_approval_missing_task_id", "The approval has no reserved managed task ID.")
@@ -868,7 +876,9 @@ class AgentService:
                 row.status = "running"
                 session.commit()
                 try:
-                    payload = bound_json(spec.handler(session, arguments))
+                    raw_payload = spec.handler(session, arguments)
+                    # Approval inputs must stay exact even when their send scope exceeds report limits.
+                    payload = raw_payload if call.name in {"create_workflow_run", "resume_workflow_run", "cancel_workflow_run"} else bound_json(raw_payload)
                     if not isinstance(payload, dict):
                         payload = {"value": payload}
                     row = session.get(AgentToolCall, row.id) or row
@@ -965,6 +975,23 @@ class AgentService:
         payload = normalize_write_payload(approval.tool_name, approval.payload_json)
         task_id = reserved_task_id or approval.result_task_id
         action = approval.tool_name
+        if action in {"create_workflow_run", "resume_workflow_run", "cancel_workflow_run"}:
+            from app.agent.workflow_tools import build_workflow_service
+            from app.workflow.schemas import RunCreate
+
+            workflow = build_workflow_service(self.storage, self.session_factory, self.settings)
+            if action == "create_workflow_run":
+                values = {key: value for key, value in payload.items() if key not in {"action", "preview", "reserved_task_id"}}
+                values["idempotency_key"] = task_id or values["idempotency_key"]
+                request = RunCreate.model_validate(values)
+                from app.vision.settings import VisionSettingsService
+                prepared = workflow.prepare_run(request, VisionSettingsService(self.settings).get().model_dump(mode="json"))
+                if prepared["vision_approvals"] != request.inputs.get("vision_approvals", {}):
+                    raise ConflictError("workflow_approval_scope_changed", "The approved image hashes or model destination changed. Prepare a new approval.")
+                result = workflow.create_run(request, run_id=task_id)
+                return result["id"], f"已确认并创建工作流 `{result['id']}`。可在工作流页查看进度，流程会在人工审核节点等待确认。"
+            result = workflow.cancel_run(payload["run_id"], operation_id=task_id) if action == "cancel_workflow_run" else workflow.retry_run(payload["run_id"], operation_id=task_id)
+            return result["id"], f"工作流 `{result['id']}` 已更新，当前状态为 {result['status']}。"
         if action == "create_training_task":
             training = self._require_training_service()
             create_payload = TrainingTaskCreate.model_validate(
@@ -1017,6 +1044,14 @@ class AgentService:
         raise ValidationError("unsupported_agent_write_tool", f"Unsupported write tool: {action}")
 
     def _managed_task_exists(self, session: Session, tool_name: str, task_id: str) -> bool:
+        if tool_name in {"resume_workflow_run", "cancel_workflow_run"}:
+            from app.workflow.models import WorkflowEvent
+            return session.get(WorkflowEvent, task_id) is not None
+        if tool_name == "create_workflow_run":
+            from app.workflow.models import WorkflowRun
+
+            return session.scalar(select(WorkflowRun.id).where(
+                (WorkflowRun.id == task_id) | (WorkflowRun.idempotency_key == task_id))) is not None
         if tool_name == "create_training_task":
             return session.get(TrainingTask, task_id) is not None
         if tool_name == "create_model_evaluation":

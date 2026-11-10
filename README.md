@@ -1,362 +1,96 @@
-# YoloWebAgentStarter
+# Vision-Language Automated Annotation（VLAA）
 
-[English README](README.en.md)
+[下载源码 ZIP](https://github.com/shengbei4980/VLAA/archive/refs/heads/main.zip) · [English](README.en.md) · [安装教程](docs/INSTALL.md) · [使用教程](docs/USER_GUIDE.md) · [本地快速使用](本地使用说明.md)
 
-YoloWebAgentStarter 是面向本地单用户的 YOLO 数据集工作台：完成图片/视频帧导入、人工标注、数据校验、YOLO/COCO 交换、本地训练、原生 YOLO 评估和受管模型产物的一条轻量闭环，并提供基于工具证据的智能助手。
+VLAA 是一个本地运行的图像标注工作台：由视觉大模型提出标注、由独立视觉角色检查，再由你补画、修边和确认。确认后的数据可以导出，也可以继续训练识别模型、评估并处理下一批图片。
 
-另提供商业版本，详情可通过文末联系方式咨询，官网链接将于后续补充。
+同一套流程可以用于塔体与建筑构件、街景、卫星 RGB 图像等不同对象。每个任务分别设置类别、说明和模型，项目目录分别保存结果。
 
-## 为什么使用它
+本次整理版本为 **v0.2.0 源码安装包**。需要在电脑上安装 Python 和 Node.js，并自行配置视觉模型服务与所需权重。
 
-- 在本机完成 detect、segment、OBB 和 classify 数据集的标注与训练准备。
-- 用持久化的 `train` / `val` / `test` split 贯通校验、YOLO 导出和本地训练。
-- 提供 SAM 的 segment 交互建议；所有建议都必须由用户确认后按普通 polygon 标注保存。
-- 在设置页管理 SAM 模型、推理设备、推理尺寸和无模型时的 review-only 回退策略。
-- 训练页可选择 CPU、MPS、单张 CUDA GPU 或多张 CUDA GPU；本地多 GPU 使用 Ultralytics DDP。
-- 提供本地后端运行日志页，支持尾部行数、级别和内容筛选；语言偏好保存在浏览器本地。
-- 训练结果只以受管的 `best.pt`、`last.pt` 和静态 FP32 ONNX 产物形式进入模型库。
-- 对受管 PT 后台运行原生 Ultralytics `val`，保存指标、日志、图表和最多 200 个可审阅错误样本。
-- 从数据集卡片启动本地自动标注任务：默认跳过已有标注的图片，选择匹配的受管 PT、显式确认类别映射、调整置信度/IoU、可选清理旧标注，实时查看进度并取消；训练与自动标注在本机互斥执行，结果保留为 `auto` 来源，必须人工审核后再训练。
-- Agent MVP：内置综合、数据集、训练、模型四种助手模式，共享执行器；提供训练准备、失败诊断与模型可比性报告。写操作须人工确认后才提交现有受管任务，不自动串联下一步。支持对象绑定会话、异步进度、取消及保留原模式与权限的重试，见 [Agent 运行说明](docs/agent.md)。
-- 长对话按需加载，支持会话搜索、逐轮查看工具证据与审批记录，以及阅读历史时的新回复提示。
-- 默认只监听 `127.0.0.1`，数据、数据库、导出和训练文件均保留在本机。
+## 可以完成哪些工作
 
-## 功能一览
+| 你的目标 | 使用方式 | 得到的结果 |
+| --- | --- | --- |
+| 没有标注，先让大模型看图 | 选择“用视觉 LLM 标注并检查”，填写类别和规则 | 检查后的标注草稿，可继续人工编辑 |
+| 已有识别模型，批量预标注 | 选择“用已有模型标注并检查” | 模型候选与人工复核记录 |
+| 补齐漏标或修正轮廓 | 在图像复核页使用多边形、画笔、橡皮、顶点编辑或 SAM | 原图像素坐标的修订标注，支持撤销与重做 |
+| 在外部继续编辑 | 导出 LabelMe JSON；支持单图与批量保存 | 含原图的 JSON、标注预览 PNG、批量 ZIP |
+| 训练自己的识别模型 | 确认本批标注后，选择训练与评估流程 | 本地 YOLO 训练权重、指标、日志和评估结果 |
+| 多个研究对象长期复用 | 保存类别与模型方案，并选择项目根目录 | 每次运行独立保存 JSON、图片、模型和评估产物 |
 
-| 能力 | 说明 |
-|---|---|
-| 数据集 | 创建数据集和类别、浏览器上传、视频预检与异步抽帧（MP4/MOV/AVI）、受限本地目录扫描、持久化 split 管理、批量及可复现自动 split、只读重复/相似图报告和派生切片数据集 |
-| 标注 | detect bbox、segment polygon、OBB 选择/移动/缩放/旋转、单标签 classify |
-| SAM | segment 的框选/点选建议；未配置模型时仅提供明确标识的 review-only 框形建议 |
-| 数据交换 | YOLO detect / segment / OBB ZIP 导入与导出；YOLO classify 目录布局导入与导出；detect/segment COCO ZIP 导入与导出 |
-| 训练 | 本地 FIFO 队列、CPU/MPS/CUDA 单 GPU 或本地多 GPU DDP、日志、进度、停止控制、恢复中断任务或从受管 `last.pt` 创建继续训练任务、指标摘要/趋势、配置快照和 best/last checkpoint |
-| 设置与日志 | SAM 设置、Agent LLM 配置与连接测试、语言设置、本地运行日志查看与筛选 |
-| 评估 | 后台原生 YOLO `val`、持久化 split、任务状态与恢复、日志、混淆矩阵、可用 PR 曲线和最多 200 个错误样本；segment 分别保留 box/mask 指标与曲线 |
-| 模型 | 训练产物的受管 PT 下载、持久化图片快速测试、同数据集模型比较、可审阅预标注、自动标注任务/日志、去重 FP32 ONNX 导出 |
-| 数据质量 | 标注覆盖率、类别分布、小目标、重叠 bbox 和类别失衡提示 |
-| Agent MVP | 四种内置助手模式、对象绑定会话、只读问答与诊断报告；人工确认后提交训练/评估/自动标注任务；异步运行、取消、重试、逐轮证据与推理来源；会话和消息分页、服务端会话搜索；LLM 设置保存到 `settings.json`，运行记录保存到 SQLite，日志对凭据和敏感参数脱敏 |
-| 安全边界 | 受管存储根目录、导入目录边界、ZIP 防资源耗尽限制、默认 localhost 绑定；Agent 写操作须确认且禁止任意路径/外部 PT/Shell |
+视觉 LLM 负责看图、提出对象与位置、检查错类和漏标；分割流程由配置的 SAM 模型生成对象轮廓。已有 YOLO 模型也是候选来源之一。LLM 检查可以发现问题，但模型输出仍需人工复核，自动检查通过不代表标注完全正确。
 
-### 任务支持
+## 安装与打开
 
-| 任务 | 标注表示 | YOLO 交换 | 本地训练 | split 评估 |
-|---|---|---|---|---|
-| `detect` | bbox | 支持 | 支持 | box P/R/mAP、图表和错误样本 |
-| `segment` | polygon；可选 SAM 建议 | 支持 | 支持 | box/mask 两组 P/R/mAP、RLE 预测和图表 |
-| `obb` | 绝对像素的中心、尺寸、角度 | 支持 | 支持 | OBB 指标、图表和 polygon IoU 错误样本 |
-| `classify` | 每张图片一个类别 | 标准 `split/class/image` 目录 | 支持 | top-1 / top-5 指标 |
+推荐 **Windows、Python 3.12、Node.js 22 LTS**，Node.js 最低要求为 20。首次安装需要联网下载依赖。
 
-不包含：登录/RBAC、协作、Workflow、无人值守 Agent 自动化（定时、触发器、任务自动串联）、文本提示分割、Deployment、pose、云训练和远程分布式调度。Agent 不得执行任意路径、外部 PT 或 Shell 命令。自动标注仅支持本地受管 Ultralytics PT，并且结果必须人工审核。完整边界见 [Community v2 功能矩阵](phase1_scope.md)。
+1. 在 [GitHub 仓库](https://github.com/shengbei4980/VLAA)点击“Code → Download ZIP”并解压，或使用 Git 克隆仓库。
+2. 在项目根目录双击 `install.cmd`，等待安装完成。
+3. 双击 `start.cmd`，浏览器会打开[本地工作台](http://127.0.0.1:5173/)。
+4. 首次使用进入“设置 → 视觉模型接入”，配置候选提出者与独立检查者。
+5. 进入“通用图像工作流”，选图片、设类别、选项目根目录，再预览并启动。
 
-## 系统架构
+PowerShell 也可以运行：
 
-### 应用分层与存储
+```powershell
+py -3.12 scripts/setup.py
+py -3.12 run.py
+```
 
-React 前端通过 API 适配层访问 FastAPI。HTTP 路由将请求交给领域服务；本地任务由队列或后台 runner 执行，文件经受管存储边界访问。
+安装器使用仓库内的 `.venv` 安装 Python 依赖，在 `frontend` 执行 `npm ci`。启动器使用这些本地依赖启动前后端。完整步骤、环境检查与常见问题见[安装教程](docs/INSTALL.md)。
+
+每次更新主分支，[源码打包任务](https://github.com/shengbei4980/VLAA/actions/workflows/source-package.yml)还会生成包含源码 ZIP、逐文件清单和 SHA256 校验文件的下载附件（需登录 GitHub，保留 90 天）。长期下载可使用上方的源码 ZIP 入口。
+
+## 第一次标注的流程
 
 ```mermaid
 flowchart LR
-    UI["React + TypeScript<br/>数据集 / 标注 / 训练 / 模型 / 智能体"]
-
-    subgraph Starter["本地 Starter 后端"]
-        direction LR
-        API["FastAPI HTTP 路由"]
-        Domain["领域服务<br/>数据集 / 标注 / 训练 / 模型"]
-        Agent["Agent Service<br/>Profiles / 工具策略 / 人工确认"]
-        Jobs["本地队列与后台 Runner<br/>训练 / 评估 / 自动标注 / 视频导入"]
-        Settings["Settings Service"]
-        DB[("SQLite<br/>业务数据 / 会话 / 运行与审批记录")]
-        Storage["Storage 与领域文件边界<br/>图片 / 权重 / 导出 / 日志"]
-        Config["settings.json<br/>SAM / LLM 配置"]
-
-        API --> Domain
-        API --> Agent
-        API --> Settings
-        Agent -->|受控工具调用| Domain
-        Agent -->|读取配置| Settings
-        Domain --> Jobs
-        Domain --> DB
-        Domain --> Storage
-        Jobs --> DB
-        Jobs --> Storage
-        Agent --> DB
-        Settings --> Config
-    end
-
-    UI -->|前端 API 适配层| API
-    Agent -.->|启用 LLM 时| LLM["Chat Completions 兼容服务<br/>本机或远端"]
+    A[图片与类别说明] --> B[视觉 LLM 提出候选]
+    B --> C[分割任务生成轮廓]
+    C --> D[格式检查与独立视觉检查]
+    D --> E[有界修正与复查]
+    E --> F[人工补画、修边、整图确认]
+    F --> G[冻结已确认数据版本]
+    G --> H[导出标注]
+    G --> I[训练与评估]
+    I --> J[按条件处理下一批]
 ```
 
-默认 Agent 使用内置 Mock / 规则规划。四种助手模式共享执行器；LLM 配置由设置服务保存到 `settings.json`，会话和运行记录保存到 SQLite。Starter 可独立运行。
+检测任务跳过轮廓生成步骤；不同模板包含的后续步骤不同。建议先用少量图片走通“自动标注 → 人工检查 → 导出 JSON”，再扩大批量。逐步操作见[使用教程](docs/USER_GUIDE.md)。
 
-### 数据集到模型的数据流
+## 模型与任务支持
 
-标注按绝对像素持久化。校验、YOLO 导出与评估共享同一份图片 split，模型版本从本地训练的受管产物创建。
+| 能力 | 当前范围 |
+| --- | --- |
+| 通用视觉 LLM 工作流 | 目标检测、实例分割；远端 API 与本地 HTTP 服务使用统一图像合同 |
+| 数据集标注、YOLO 训练与评估 | 检测 `detect`、分割 `segment`、旋转框 `obb`、图像分类 `classify` |
+| 轮廓编辑 | 原始像素掩膜、兼容多边形；SAM 框选与点提示；补画、擦除和撤销/重做 |
+| 数据交换 | YOLO、COCO、LabelMe，具体格式需匹配任务类型 |
+| 项目输出 | 运行前选择项目根目录；单图 JSON/PNG、批量 ZIP 和流程产物沿用该目录 |
+| 任务管理 | 运行状态、步骤记录、取消、运行记录删除与恢复 |
 
-```mermaid
-flowchart LR
-    Import["图片 / 视频抽帧<br/>YOLO / COCO 导入"] --> Dataset["数据集与人工标注"]
-    Dataset --> Validate["数据校验"]
-    Validate --> Export["YOLO 导出"]
-    Export --> Train["本地训练队列"]
-    Train --> PT["受管 PT<br/>best.pt / last.pt"]
-    PT --> Eval["原生 YOLO val<br/>指标 / 图表 / 错误样本"]
-    PT --> ONNX["静态 FP32 ONNX"]
-    Dataset --> Split["已持久化的图片 split"]
-    Split -.-> Validate
-    Split -.-> Export
-    Split -.-> Eval
-```
+LabelMe 检测/分割 JSON 可用于外部编辑；原生掩膜形状需要 LabelMe 5.8.0 或更新版本。COCO RLE 和 LabelMe 掩膜可保留孔洞及分离区域。YOLO 多边形的表达能力有限，导出时会检查几何损失。
 
-各阶段由用户发起。自动标注也使用受管 PT，结果保存为 `auto` 来源，人工审核后用于训练。
+当前训练引擎为 Ultralytics YOLO。添加其他引擎（例如 SegFormer）需要对应的训练、推理、评估适配，不能仅放入权重文件。视觉 API 与本地 HTTP 接入也需要兼容本工具的请求与坐标合同；保存配置后应先执行图像与坐标测试。
 
-### 智能体查询与人工确认
+## 数据与保存位置
 
-Agent 先绑定助手模式、对象和本轮权限，再向 Provider 提供可用工具。只读工具获取业务证据；写工具先生成待确认申请，人工确认后才提交现有任务。
+- 默认前端为 `127.0.0.1:5173`，后端为 `127.0.0.1:8000`，面向本地单用户使用。
+- 工作台数据库、设置和任务产物默认放在本地 `data` 目录；可在存储设置中管理工作台数据位置。
+- 在运行前选定项目根目录后，JSON、预览图、模型和评估结果按运行编号保存在该项目内。
+- 选择远端视觉服务时，处理的图片会发送到预览中显示的端点；选择本地 HTTP 服务时，需要先运行对应服务。
+- 密钥保存在本地配置，源码包不包含密钥、数据集、模型权重或运行记录。
 
-```mermaid
-sequenceDiagram
-    actor User as 用户
-    participant UI as 智能体页面
-    participant Agent as Agent Service / 执行器
-    participant Provider as LLM 或 Mock Provider
-    participant Domain as 现有领域服务
+## 来源与发布状态
 
-    User->>UI: 选择模式与对象，发送问题
-    UI->>Agent: 提交消息与只读权限
-    Agent-->>UI: 202，返回排队运行
-    Note over Agent: 会话、运行、工具调用和审批持久化到 SQLite
-    Agent->>Provider: 有界历史、对象上下文与工具白名单
-    Provider-->>Agent: 回答或工具调用请求
-    Agent->>Agent: 校验模式、只读权限与对象范围
+VLAA 基于 [YoloWebAgentStarter](https://github.com/fengzhizi715/YoloWebAgentStarter) 进行定制，保留原项目与其上游贡献者的来源归属。第三方依赖遵循各自的许可证。
 
-    alt 只读工具
-        Agent->>Domain: 查询或校验
-        Domain-->>Agent: 业务证据
-        Agent->>Provider: 工具结果
-        Provider-->>Agent: 基于证据的回答
-        UI->>Agent: 轮询当前运行
-        Agent-->>UI: 回答、工具证据与推理记录
-    else 写操作申请
-        Note over Agent: 保存待确认申请
-        UI->>Agent: 轮询当前运行
-        Agent-->>UI: 对象、参数与预期产物预览
-        User->>UI: 审核并选择确认或拒绝
-        alt 确认执行
-            UI->>Agent: 确认申请，可附调整后的参数
-            Agent->>Agent: 再次校验策略、参数、有效期与执行状态
-            Agent->>Domain: 提交训练 / 评估 / 自动标注任务
-            Domain-->>Agent: 受管任务 ID
-            Agent-->>UI: 任务 ID 与审批结果，本轮结束
-        else 拒绝
-            UI->>Agent: 拒绝申请
-            Agent-->>UI: 记录拒绝并结束本轮
-        end
-    end
-```
+仓库包含 [LICENSE](LICENSE) 与 [NOTICE](NOTICE)，但现有记录中继承代码的公开发布授权仍为 **pending**。当前提供源码安装说明；正式 tag/release 仍需补齐[上游授权记录](docs/provenance/UPSTREAM_AUTHORIZATION.md)，并通过仓库中的发布检查。源码可访问不代表该记录已补齐，本地 MIT 文件本身也不能证明对所有继承代码拥有再许可权利。
 
-任务创建后的进度和控制位于对应任务页面。详细运行、取消、重试和历史分页行为见 [Agent 运行说明](docs/agent.md)。
+## 更多文档
 
-## 快速开始
-
-### 依赖
-
-- macOS 或 Linux
-- Python 3.11 / 3.12
-- Node.js 20+
-
-从仓库根目录执行：
-
-```bash
-python3.12 -m venv .venv
-.venv/bin/pip install -r backend/requirements.txt -r backend/requirements-dev.txt
-npm --prefix frontend install
-./run-backend.sh
-```
-
-在另一个终端启动前端：
-
-```bash
-./run-frontend.sh
-```
-
-打开 <http://127.0.0.1:5173>；API 地址为 <http://127.0.0.1:8000>。也可以执行 `./run-all.sh`（或 `sh run-all.sh`）同时启动两个服务，并以 `Ctrl+C` 一并停止。
-
-> 训练页基础权重支持 YOLOv8、YOLO11 和 YOLO26 系列，并按任务匹配后缀。首次使用命名权重时，Ultralytics 可能下载对应文件。请在确认适用许可后使用，且不要提交权重、数据集或产物。
-
-## 首次使用流程
-
-1. 创建 `detect`、`segment`、`obb` 或 `classify` 数据集。
-2. 上传图片，或把图片放入 `data/imports/` 下的子目录并在界面中扫描。
-3. 添加类别并标注：bbox、polygon、可旋转 OBB，或每图一个分类标签。
-4. 确保 `train` 与 `val` 都至少有一张已标注图片，运行数据集校验。
-5. 导出/导入 YOLO 数据，或在训练页选择匹配的模型族并发起本地任务。
-6. 训练完成后进入“模型”工作区，对受管 PT 选择 `train`、`val` 或 `test` split 创建后台评估任务。
-
-训练完成后，`best.pt` 与 `last.pt` 会登记到受管模型目录；在“模型”工作区可下载 PT、编辑元数据、归档、生成 FP32 ONNX，或查看评估历史、原生指标、图表、日志和错误样本。评估与 YOLO 导出复用图片已经持久化的 split，不会重新随机切分。
-
-更完整的操作步骤、SAM 说明和故障排查请见[五分钟上手](docs/quick-start.md)。可用以下命令生成可丢弃的微型 detect 数据集：
-
-```bash
-./.venv/bin/python scripts/create_tiny_demo.py /tmp/ywa-tiny-demo
-```
-
-## 使用智能助手
-
-从侧栏“智能体”进入综合助手，也可从数据集卡片、训练或模型页面的“询问助手”进入，自动携带对应对象。页面提供四种内置 Agent Profiles；它们共享 LLM 配置和执行器，各自限定可用工具。
-
-| 助手模式 | 典型问题 | 可申请的任务（均需人工确认） |
-|---|---|---|
-| 综合助手 | “有哪些数据集、训练和模型？” | 训练、评估、自动标注 |
-| 数据集助手 | “这个数据集适合开始训练吗？” | 训练、自动标注 |
-| 训练助手 | “这个训练为什么失败？” | 训练、评估 |
-| 模型助手 | “这两个模型可以直接比较吗？” | 评估、自动标注 |
-
-### 配置与提问
-
-1. 默认使用本地 Mock / 规则规划，无需密钥即可体验工具查询、报告和人工确认流程。要确保只做查询，勾选输入框下方的“仅查询”，或使用快捷提问。
-2. 使用真实 LLM 时，打开“设置 → Agent LLM”，启用 Provider，填写 API Base URL、模型与服务所需的认证信息，测试连接后保存。当前使用 Chat Completions 兼容接口；智能体工具调用需要模型和服务支持工具调用协议。
-3. 选择助手模式和对象后输入问题，支持 `Ctrl / ⌘ + Enter` 发送。已有会话改变模式或对象时，页面要求选择新建会话或明确继续当前会话。
-4. 请求创建任务时，先检查待确认卡片中的对象、参数和预期产物；只有点击“确认执行”后才提交领域任务，提交后本轮结束。
-5. 查看异步运行状态、工具证据和推理来源；失败或取消的运行可重试，沿用原运行的模式、对象及只读权限。已提交任务的停止控制位于对应任务页面。
-
-关闭 LLM 后可继续使用本地规则模式。启用外部 LLM 服务时，问题、对象上下文和用于回答的工具结果会发送给所配置的服务。连接测试结果不等于模型已通过完整业务与工具调用测试。
-
-### 会话与历史
-
-- 会话列表每页 30 条，可继续加载；服务端搜索覆盖所有会话的标题和绑定对象 ID，不搜索消息正文，也不会切换当前会话。
-- 打开会话默认加载最近 50 条非工具消息；“加载更早消息”向前翻页并保持阅读位置。每轮可展开工具结果、推理记录和审批状态，历史审批只展示记录。
-- 运行中每秒只刷新当前运行；阅读历史时不会强制跳到底部，可通过“有新回复 · 回到最新”恢复跟随。
-- 完整历史保存在数据库中，但模型上下文有长度预算。分页不会让 LLM 自动记住全部历史；当前没有自动摘要或虚拟列表，手动持续加载后页面消息仍会累积。
-
-模型可比性报告会检查数据集、任务、评估 split 和阈值；当前缺少可核验的数据快照指纹，因此不能仅凭指标一致就认定两个模型可直接排名或替换。完整能力、历史预算和 API 合约见 [Agent 运行说明](docs/agent.md)。
-
-## 设备支持
-
-训练设备由 Ultralytics 在本机解析：
-
-| 设备 | 在界面中的值 | 状态 |
-|---|---|---|
-| CPU | `cpu` 或 `auto` | 发布冒烟已覆盖 |
-| Apple Silicon / Metal | `mps` | 支持传递给 Ultralytics；请在目标 Mac 上执行冒烟验证 |
-| NVIDIA CUDA 单 GPU | `0`、`cuda:0` 或界面中的单 GPU | 支持传递给 Ultralytics；需要匹配的 CUDA PyTorch、驱动和硬件 |
-| NVIDIA CUDA 多 GPU | `0,1` 或界面中的多 GPU | 使用 `device=0,1` 触发本地 Ultralytics DDP；不提供远程调度 |
-
-本仓库当前的 CI 基线为 CPU。MPS 与 CUDA 的兼容性取决于目标主机的 PyTorch/Ultralytics 组合、驱动和可用硬件。
-
-## 配置与数据位置
-
-所有运行时数据默认位于被 Git 忽略的 `./data/`：SQLite 数据库、受管图片、训练任务、导出和模型文件。常用配置如下；完整示例见 [backend/.env.example](backend/.env.example)。
-
-| 环境变量 | 默认值 | 用途 |
-|---|---|---|
-| `YWA_DATA_DIR` | `./data` | Starter 受管运行时根目录 |
-| `YWA_IMPORT_ROOT` | `./data/imports` | 服务端目录扫描允许访问的唯一根目录 |
-| `YWA_HOST` / `YWA_PORT` | `127.0.0.1` / `8000` | 后端监听地址和端口 |
-| `YWA_MAX_UPLOAD_MB` | `50` | 单次上传上限 |
-| `YWA_MAX_VIDEO_*` | 见示例文件 | 视频暂存大小、时长、抽帧数与输出大小限制 |
-| `YWA_MIN_VIDEO_FREE_MB` | `2048` | 视频抽帧开始及批处理时要求的最小空闲磁盘空间 |
-| `YWA_MAX_YOLO_ARCHIVE_*` | 见示例文件 | YOLO ZIP 的数量、解压大小和压缩比限制 |
-| `YWA_SAM_MODEL` | 未设置 | 启用真实 Ultralytics SAM 框/点提示的本地或命名检查点 |
-| `YWA_SAM_DEVICE` | `auto` | SAM 设备请求，例如 `mps` 或 `cpu` |
-| `YWA_SAM_IMGSZ` | `1024` | SAM 推理尺寸；设置页保存的值优先于环境默认值 |
-| `YWA_AGENT_PROVIDER` | `mock` | Agent Provider 默认值；真实 LLM 可使用 `openai-compatible` |
-| `YWA_AGENT_BASE_URL` | 未设置 | LLM API Base URL 默认值 |
-| `YWA_AGENT_MODEL` | `mock-model` | 模型默认值；启用真实 LLM 时须指定服务提供的模型 |
-| `YWA_AGENT_API_KEY` | 未设置 | LLM 认证密钥默认值；是否需要取决于服务 |
-| `YWA_AGENT_MAX_TOOL_ROUNDS` | `8` | 每次运行的最大工具推理轮数 |
-| `YWA_AGENT_APPROVAL_TTL_SECONDS` | `3600` | 待确认操作的有效时间（秒） |
-
-设置页的 SAM 和 Agent LLM 配置保存在 `YWA_DATA_DIR/settings.json`，环境变量提供默认值；LLM 密钥不写入 SQLite，也不通过设置读取接口返回明文。语言偏好只保存在浏览器 localStorage；运行日志保存在 `YWA_DATA_DIR/logs/backend.log`，按 2 MiB 轮转并保留 3 个备份，日志页会合并展示保留文件中的最新行。
-
-不可信 YOLO ZIP 在写入前会检查最多 2,000 个成员、单成员 100 MiB、总解压量 250 MiB 和 100:1 压缩比；图片逐成员流式写入受管目录。目录扫描会拒绝导入根目录外路径和逃逸的软链接。
-
-### 视频导入（核心可用版）
-
-从“数据集 → 导入数据集”打开 Import Center，选择“视频文件”并上传 MP4、MOV 或 AVI，指定新数据集名称、任务类型、初始 split，以及 FPS、时间间隔或帧间隔。上传完成后会解码代表帧，显示分辨率、时长、预计帧数和 JPEG 输出体积；确认“开始导入”后，本地串行任务才会生成 JPEG 帧并创建数据集。每张帧图都保存来源视频、校验和、任务 ID、帧号与时间戳，可用于审计。
-
-连续视频帧通常高度相似。默认策略会将所有帧放入选择的初始 split；也可选择“按连续时间块分配”，用指定窗口和 train/val/test 比例把整段时间块分到单一 split。请根据采集场景确认该策略是否适合评估分布。
-
-已提交的帧会写入检查点。服务重启时，已确认启动的运行中任务会从下一帧自动恢复；如果其部分生成的数据集已被手动删除，任务会失败，用户可选择重试并从头开始。
-
-## 更新已有安装
-
-更新代码前先停止前后端，并备份 `YWA_DATA_DIR`（包含数据库、`settings.json` 和受管文件）。更新代码后，在仓库根目录执行：
-
-```bash
-.venv/bin/pip install -r backend/requirements.txt -r backend/requirements-dev.txt
-npm --prefix frontend install
-./run-all.sh
-```
-
-正常启动后端会自动执行尚未应用的 Alembic migration。智能体历史分页使用 `0019_agent_history_indexes` 新增的复合索引，不删除历史记录；更新前端后也需重启后端，使新路由和迁移生效。重启前仍未完成的智能体推理会标记为失败，需要人工重试。
-
-## 安全与运行边界
-
-这是本地单用户软件，不提供认证、授权、TLS 或多租户隔离。请不要将服务绑定到 `0.0.0.0`、转发端口或直接放到公网反向代理之后。
-
-## 评估实现与产物
-
-评估仅接受 Starter 训练任务登记的受管 Ultralytics PT 模型。HTTP 路由创建任务后立即返回；本地后台 runner 执行原生 `val`：
-
-```text
-yolo <detect|segment|obb|classify> val ... plots=True save_json=True exist_ok=True
-```
-
-- detect 与 OBB 保存 box 指标；segment 同时解析 box 和 mask 两组 precision、recall、mAP50、mAP50-95；classify 保存 top-1、top-5。
-- 产物通过受管 artifact API 提供，不允许请求评估目录外文件。通用任务使用 `PR_curve.png`；Ultralytics 8.4.115 的 segment 使用 `BoxPR_curve.png` 与 `MaskPR_curve.png`，页面会分别展示。
-- `predictions.json` 按 Ultralytics 8.4.115 的真实格式分析：detect 使用左上角 `xywh`，segment 使用 pycocotools RLE mask，OBB 使用 `rbox` / `poly`。
-- 错误样本包括 missed detection、false positive 和 low confidence；分析器使用已导出的同一 split 标签，最多持久化 200 条。classify 当前只展示原生指标，不生成目标级错误样本。
-- 服务重启时，运行中的任务会标记失败并保留错误信息；尚未开始的任务会重新提交本地 runner。
-
-图表只有在 Ultralytics 实际生成时才会出现。例如没有有效 TP 的极小随机模型可能不会生成 PR 曲线，但仍会产生指标、日志、混淆矩阵和预测 JSON。
-
-## 许可与来源说明
-
-项目许可、来源及第三方依赖说明见 [LICENSE](LICENSE)、[NOTICE](NOTICE) 和 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
-
-## 项目结构
-
-```text
-backend/app/       FastAPI、领域服务、SQLite/Alembic、本地训练队列和评估 runner
-frontend/src/      React 标注工作台、训练、模型管理、评估详情和智能体界面
-scripts/           微型数据集、四任务 CPU 训练/segment-val 烟雾测试和发布门槛脚本
-docs/              快速开始、智能体运行说明、依赖审计和来源授权材料
-data/              默认运行时目录（忽略，不提交）
-```
-
-后端路由只适配 HTTP；数据集、标注、训练和文件访问均由领域服务与受管存储边界处理。
-
-## 开发与验证
-
-请始终使用仓库的 `.venv`，并在提交前执行：
-
-```bash
-PYTHONPATH=backend .venv/bin/pytest backend/tests
-npm --prefix frontend test
-npm --prefix frontend run build
-PYTHONPATH=backend .venv/bin/python scripts/run_cpu_smoke.py
-```
-
-标准测试会直接调用 Ultralytics 8.4.115 的 detect、segment、OBB validator 生成真实 JSON 合约，再交给错误样本分析器验证。CPU 冒烟会实际运行四任务的一轮微型训练，使用原生参数执行 segment `val(save_json=True, plots=True)`，并校验 box/mask 八项指标、pycocotools RLE、混淆矩阵、预测 JSON 和 detect ONNX 导出。整个冒烟使用临时目录且不保留模型或数据集；首次运行可能需要等待 Matplotlib 字体缓存和 ONNX 导出。
-
-智能体自动化测试使用 Mock Provider，无需配置真实 LLM 密钥，覆盖工具策略、对象绑定、人工确认、运行恢复及历史分页；真实 Provider 的网络连接和模型工具调用能力需另外验证。
-
-极小的离线随机模型不保证产生有效 TP，因此 CPU 冒烟不强制要求 PR 曲线存在；`BoxPR_curve.png` / `MaskPR_curve.png` 的 Ultralytics 8.4.115 命名契约由聚焦测试覆盖。详见 [CONTRIBUTING.md](CONTRIBUTING.md) 和 [CHANGELOG.md](CHANGELOG.md)。
-
-
-## 联系方式
-wechat：fengzhizi715
-
-Email：fengzhizi715@126.com
-
-## 参与贡献
-
-欢迎提交范围内的缺陷修复、测试、文档和本地单用户体验改进。提交前请：
-
-1. 保持功能在 [Community v2 范围](phase1_scope.md) 内；新增任务类型、认证、云服务或工作流能力请先讨论。
-2. 为行为变化补充聚焦测试，并运行上述验证命令。
-3. 不提交模型权重、数据集、客户材料、凭据、构建日志或绝对路径。
-4. 保留并更新来源记录，保持项目可独立运行。
-
-完整规范见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+- [安装、启动与排错](docs/INSTALL.md)
+- [从新建项目到导出与训练的使用教程](docs/USER_GUIDE.md)
+- [任务助手 Agent 运行说明](docs/agent.md)
+- [来源与上游授权记录](docs/provenance/UPSTREAM_AUTHORIZATION.md)

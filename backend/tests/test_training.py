@@ -7,6 +7,8 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
+from workflow_test_helpers import confirm_image, install_fake_yolo
+
 
 def image_bytes() -> bytes:
     image = Image.new("RGB", (80, 60), "#6688aa")
@@ -15,95 +17,20 @@ def image_bytes() -> bytes:
     return output.getvalue()
 
 
-def fake_yolo(path: Path) -> None:
-    path.write_text(
-        """#!/bin/sh
-project=""
-name="run"
-for arg in "$@"; do
-  case "$arg" in
-    project=*) project="${arg#project=}" ;;
-    name=*) name="${arg#name=}" ;;
-  esac
-done
-[ -z "$YWA_ARGS_CAPTURE" ] || printf '%s\n' "$@" > "$YWA_ARGS_CAPTURE"
-mkdir -p "$project/$name/weights"
-printf 'epoch,metrics/mAP50(B)\\n0,0.81\\n' > "$project/$name/results.csv"
-printf 'fake best' > "$project/$name/weights/best.pt"
-printf 'fake last' > "$project/$name/weights/last.pt"
-printf '1/1\\n'
-""",
-        encoding="utf-8",
-    )
-    path.chmod(0o755)
+def fake_yolo(path, monkeypatch):
+    install_fake_yolo(path, monkeypatch)
 
 
-def slow_yolo(path: Path) -> None:
-    path.write_text(
-        """#!/bin/sh
-project=""
-name="run"
-for arg in "$@"; do
-  case "$arg" in
-    project=*) project="${arg#project=}" ;;
-    name=*) name="${arg#name=}" ;;
-  esac
-done
-mkdir -p "$project/$name/weights"
-printf '1/20\\n'
-sleep 5
-printf 'fake best' > "$project/$name/weights/best.pt"
-printf 'fake last' > "$project/$name/weights/last.pt"
-""",
-        encoding="utf-8",
-    )
-    path.chmod(0o755)
+def slow_yolo(path, monkeypatch):
+    install_fake_yolo(path, monkeypatch, "slow")
 
 
-def live_metrics_yolo(path: Path) -> None:
-    path.write_text(
-        """#!/bin/sh
-project=""
-name="run"
-for arg in "$@"; do
-  case "$arg" in
-    project=*) project="${arg#project=}" ;;
-    name=*) name="${arg#name=}" ;;
-  esac
-done
-mkdir -p "$project/$name/weights"
-printf 'epoch,metrics/mAP50(B),metrics/mAP50-95(B),metrics/precision(B),metrics/recall(B)\\n0,0.42,0.21,0.60,0.30\\n' > "$project/$name/results.csv"
-printf '1/3\\n'
-sleep 1
-printf 'fake best' > "$project/$name/weights/best.pt"
-printf 'fake last' > "$project/$name/weights/last.pt"
-""",
-        encoding="utf-8",
-    )
-    path.chmod(0o755)
+def live_metrics_yolo(path, monkeypatch):
+    install_fake_yolo(path, monkeypatch, "live")
 
 
-def detailed_live_metrics_yolo(path: Path) -> None:
-    path.write_text(
-        """#!/bin/sh
-project=""
-name="run"
-for arg in "$@"; do
-  case "$arg" in
-    project=*) project="${arg#project=}" ;;
-    name=*) name="${arg#name=}" ;;
-  esac
-done
-mkdir -p "$project/$name/weights"
-printf 'epoch,time,train/box_loss,train/cls_loss,train/dfl_loss,metrics/mAP50(B)\\n1,2.5,1.2,0.3,0.1,0.42\\n' > "$project/$name/results.csv"
-printf '1/3 1.2G 1.2 0.3 0.1 2.5it/s\\n'
-sleep 1
-printf 'fake best' > "$project/$name/weights/best.pt"
-printf 'fake last' > "$project/$name/weights/last.pt"
-""",
-        encoding="utf-8",
-    )
-    path.chmod(0o755)
+def detailed_live_metrics_yolo(path, monkeypatch):
+    install_fake_yolo(path, monkeypatch, "detailed")
 
 
 def prepared_dataset(client, task_type: str = "detect") -> tuple[str, str]:
@@ -131,6 +58,7 @@ def prepared_dataset(client, task_type: str = "detect") -> tuple[str, str]:
             json={"annotations": [annotation]},
         )
         assert response.status_code == 200, response.text
+        confirm_image(client, dataset_id, image["id"])
     return dataset_id, label
 
 
@@ -155,7 +83,7 @@ def wait_for_terminal(client, task_id: str) -> dict:
 
 def test_training_task_runs_and_persists_checkpoints(client, tmp_path, monkeypatch):
     executable = tmp_path / "fake-yolo"
-    fake_yolo(executable)
+    fake_yolo(executable, monkeypatch)
     monkeypatch.setenv("YWA_YOLO_EXECUTABLE", str(executable))
     dataset_id, _ = prepared_dataset(client)
 
@@ -181,7 +109,7 @@ def test_training_task_runs_and_persists_checkpoints(client, tmp_path, monkeypat
 
 def test_running_task_refreshes_live_metrics_and_history(client, tmp_path, monkeypatch):
     executable = tmp_path / "live-metrics-yolo"
-    live_metrics_yolo(executable)
+    live_metrics_yolo(executable, monkeypatch)
     monkeypatch.setenv("YWA_YOLO_EXECUTABLE", str(executable))
     dataset_id, _ = prepared_dataset(client)
 
@@ -207,7 +135,7 @@ def test_running_task_refreshes_live_metrics_and_history(client, tmp_path, monke
 
 def test_running_task_exposes_upstream_loss_and_batch_timing(client, tmp_path, monkeypatch):
     executable = tmp_path / "detailed-live-metrics-yolo"
-    detailed_live_metrics_yolo(executable)
+    detailed_live_metrics_yolo(executable, monkeypatch)
     monkeypatch.setenv("YWA_YOLO_EXECUTABLE", str(executable))
     dataset_id, _ = prepared_dataset(client)
 
@@ -237,7 +165,7 @@ def test_running_task_exposes_upstream_loss_and_batch_timing(client, tmp_path, m
 def test_completed_task_starts_new_training_from_selected_checkpoint(client, tmp_path, monkeypatch):
     executable = tmp_path / "fake-yolo"
     capture = tmp_path / "yolo-args.txt"
-    fake_yolo(executable)
+    fake_yolo(executable, monkeypatch)
     monkeypatch.setenv("YWA_YOLO_EXECUTABLE", str(executable))
     monkeypatch.setenv("YWA_ARGS_CAPTURE", str(capture))
     dataset_id, _ = prepared_dataset(client)
@@ -268,7 +196,7 @@ def test_completed_task_starts_new_training_from_selected_checkpoint(client, tmp
 def test_interrupted_task_restores_epoch_state_in_source_run_directory(client, tmp_path, monkeypatch):
     executable = tmp_path / "fake-yolo"
     capture = tmp_path / "yolo-args.txt"
-    fake_yolo(executable)
+    fake_yolo(executable, monkeypatch)
     monkeypatch.setenv("YWA_YOLO_EXECUTABLE", str(executable))
     monkeypatch.setenv("YWA_ARGS_CAPTURE", str(capture))
     dataset_id, _ = prepared_dataset(client)
@@ -305,7 +233,7 @@ def test_interrupted_task_restores_epoch_state_in_source_run_directory(client, t
 
 def test_completed_task_rejects_epoch_state_resume(client, tmp_path, monkeypatch):
     executable = tmp_path / "fake-yolo"
-    fake_yolo(executable)
+    fake_yolo(executable, monkeypatch)
     monkeypatch.setenv("YWA_YOLO_EXECUTABLE", str(executable))
     dataset_id, _ = prepared_dataset(client)
     source_response = client.post(
@@ -322,7 +250,7 @@ def test_completed_task_rejects_epoch_state_resume(client, tmp_path, monkeypatch
 
 def test_model_metadata_and_onnx_lifecycle(client, tmp_path, monkeypatch):
     executable = tmp_path / "fake-yolo"
-    fake_yolo(executable)
+    fake_yolo(executable, monkeypatch)
     monkeypatch.setenv("YWA_YOLO_EXECUTABLE", str(executable))
     dataset_id, _ = prepared_dataset(client)
     response = client.post(
@@ -365,7 +293,7 @@ def test_model_metadata_and_onnx_lifecycle(client, tmp_path, monkeypatch):
 
 def test_onnx_export_failure_does_not_register_an_orphan(client, tmp_path, monkeypatch):
     executable = tmp_path / "fake-yolo"
-    fake_yolo(executable)
+    fake_yolo(executable, monkeypatch)
     monkeypatch.setenv("YWA_YOLO_EXECUTABLE", str(executable))
     dataset_id, _ = prepared_dataset(client)
     response = client.post(
@@ -411,7 +339,7 @@ def test_training_rejects_local_weight_outside_managed_models(client, tmp_path):
 
 def test_artifact_registration_failure_retains_training_result(client, tmp_path, monkeypatch):
     executable = tmp_path / "fake-yolo"
-    fake_yolo(executable)
+    fake_yolo(executable, monkeypatch)
     monkeypatch.setenv("YWA_YOLO_EXECUTABLE", str(executable))
 
     def fail_registration(self, session, task):
@@ -456,7 +384,7 @@ def test_training_rejects_missing_validation_split(client):
 
 def test_segment_training_uses_segment_weight_family(client, tmp_path, monkeypatch):
     executable = tmp_path / "fake-yolo-segment"
-    fake_yolo(executable)
+    fake_yolo(executable, monkeypatch)
     monkeypatch.setenv("YWA_YOLO_EXECUTABLE", str(executable))
     dataset_id, _ = prepared_dataset(client, "segment")
     response = client.post(
@@ -470,7 +398,7 @@ def test_segment_training_uses_segment_weight_family(client, tmp_path, monkeypat
 
 def test_obb_and_classify_training_use_their_weight_families(client, tmp_path, monkeypatch):
     executable = tmp_path / "fake-yolo-extra-tasks"
-    fake_yolo(executable)
+    fake_yolo(executable, monkeypatch)
     monkeypatch.setenv("YWA_YOLO_EXECUTABLE", str(executable))
     for task_type, model in (("obb", "yolo11n-obb.pt"), ("classify", "yolo11n-cls.pt")):
         dataset_id, _ = prepared_dataset(client, task_type)
@@ -484,17 +412,17 @@ def test_obb_and_classify_training_use_their_weight_families(client, tmp_path, m
 
 
 @pytest.mark.parametrize(
-    ("task_type", "model", "error_code", "missing_split"),
+    ("task_type", "model", "missing_split"),
     [
-        ("detect", "yolo11n.pt", "training_split_unannotated", "train"),
-        ("detect", "yolo11n.pt", "training_split_unannotated", "val"),
-        ("segment", "yolo11n-seg.pt", "training_split_unannotated", "val"),
-        ("obb", "yolo11n-obb.pt", "training_split_unannotated", "val"),
-        ("classify", "yolo11n-cls.pt", "training_classification_split_unannotated", "train"),
-        ("classify", "yolo11n-cls.pt", "training_classification_split_unannotated", "val"),
+        ("detect", "yolo11n.pt", "train"),
+        ("detect", "yolo11n.pt", "val"),
+        ("segment", "yolo11n-seg.pt", "val"),
+        ("obb", "yolo11n-obb.pt", "val"),
+        ("classify", "yolo11n-cls.pt", "train"),
+        ("classify", "yolo11n-cls.pt", "val"),
     ],
 )
-def test_training_requires_annotated_train_and_val_splits(client, task_type, model, error_code, missing_split):
+def test_training_requires_review_after_labels_are_cleared(client, task_type, model, missing_split):
     dataset_id, _ = prepared_dataset(client, task_type)
     image = next(item for item in client.get(f"/api/datasets/{dataset_id}/images").json()["items"] if item["split"] == missing_split)
     cleared = client.put(f"/api/datasets/{dataset_id}/images/{image['id']}/annotations", json={"annotations": []})
@@ -505,90 +433,72 @@ def test_training_requires_annotated_train_and_val_splits(client, task_type, mod
         json={"dataset_id": dataset_id, "model": model},
     )
     assert response.status_code == 422
-    assert response.json()["error"]["code"] == error_code
-    assert response.json()["error"]["details"] == {"missing_splits": [missing_split]}
+    assert response.json()["error"]["code"] == "annotation_review_required"
+    assert response.json()["error"]["details"]["image_ids"] == [image["id"]]
 
 
-def test_training_export_excludes_unannotated_images(client, tmp_path, monkeypatch):
+def test_training_export_rejects_unreviewed_images_and_accepts_explicit_background(client, tmp_path, monkeypatch):
     executable = tmp_path / "fake-yolo"
-    fake_yolo(executable)
+    fake_yolo(executable, monkeypatch)
     monkeypatch.setenv("YWA_YOLO_EXECUTABLE", str(executable))
     dataset_id, _ = prepared_dataset(client)
-    unannotated_train = upload_unannotated_image(client, dataset_id, "train", "train_unlabelled.png")
-    unannotated_val = upload_unannotated_image(client, dataset_id, "val", "val_unlabelled.png")
-
-    response = client.post(
-        "/api/training/tasks",
-        json={"dataset_id": dataset_id, "name": "unannotated-export", "model": "yolo11n.pt", "epochs": 1, "batch_size": 1},
-    )
+    empty_train = upload_unannotated_image(client, dataset_id, "train", "train_empty.png")
+    empty_val = upload_unannotated_image(client, dataset_id, "val", "val_empty.png")
+    request = {"dataset_id": dataset_id, "name": "reviewed-export", "model": "yolo11n.pt", "epochs": 1, "batch_size": 1}
+    blocked = client.post("/api/training/tasks", json=request)
+    assert blocked.status_code == 422
+    assert blocked.json()["error"]["code"] == "annotation_review_required"
+    for image in (empty_train, empty_val):
+        confirm_image(client, dataset_id, image["id"], confirmed_empty=True)
+    response = client.post("/api/training/tasks", json=request)
     assert response.status_code == 201, response.text
     task = wait_for_terminal(client, response.json()["id"])
     assert task["status"] == "completed", task
-
     export_root = Path(task["export_path"])
-    train_images = {path.name for path in (export_root / "images" / "train").iterdir()}
-    val_images = {path.name for path in (export_root / "images" / "val").iterdir()}
-    assert len(train_images) == 1
-    assert len(val_images) == 1
-    assert not any(name.startswith(unannotated_train["id"]) for name in train_images)
-    assert not any(name.startswith(unannotated_val["id"]) for name in val_images)
-    for split in ("train", "val"):
-        labels = list((export_root / "labels" / split).iterdir())
-        assert labels
-        assert all(label.read_text(encoding="utf-8").strip() for label in labels)
+    for split, image in (("train", empty_train), ("val", empty_val)):
+        assert len(list((export_root / "images" / split).iterdir())) == 2
+        empty_label = next((export_root / "labels" / split).glob(f"{image['id']}*.txt"))
+        assert empty_label.read_text(encoding="utf-8") == ""
 
 
-def test_export_dataset_directory_optionally_includes_unannotated_images(client, tmp_path):
+def test_export_dataset_directory_requires_review_even_when_including_empty_images(client, tmp_path):
+    from app.core.errors import ValidationError
     from app.dataset.exchange.yolo import export_dataset_directory
 
     dataset_id, _ = prepared_dataset(client)
-    unannotated = upload_unannotated_image(client, dataset_id, "train", "train_unlabelled.png")
-
+    unannotated = upload_unannotated_image(client, dataset_id, "train", "train_empty.png")
     with client.app.state.database.session_factory() as session:
-        default = export_dataset_directory(session, client.app.state.storage, dataset_id, tmp_path / "default")
-        included = export_dataset_directory(
-            session,
-            client.app.state.storage,
-            dataset_id,
-            tmp_path / "included",
-            include_unannotated=True,
-        )
-
-    assert default["counts"]["train"] == 1
-    assert default["annotated_image_counts"]["train"] == 1
+        for include in (False, True):
+            with pytest.raises(ValidationError, match="confirmation"):
+                export_dataset_directory(session, client.app.state.storage, dataset_id, tmp_path / str(include), include_unannotated=include)
+    confirm_image(client, dataset_id, unannotated["id"], confirmed_empty=True)
+    with client.app.state.database.session_factory() as session:
+        included = export_dataset_directory(session, client.app.state.storage, dataset_id, tmp_path / "confirmed", include_unannotated=True)
     assert included["counts"]["train"] == 2
     assert included["annotated_image_counts"]["train"] == 1
-
-    included_train = {path.name for path in (Path(included["root"]) / "images" / "train").iterdir()}
-    assert any(name.startswith(unannotated["id"]) for name in included_train)
-    empty_label = next(iter((Path(included["root"]) / "labels" / "train").glob(f"{unannotated['id']}_*.txt")))
+    empty_label = next((Path(included["root"]) / "labels" / "train").glob(f"{unannotated['id']}*.txt"))
     assert empty_label.read_text(encoding="utf-8") == ""
 
 
 def test_training_summary_reports_export_stats_and_small_validation_risk(client, tmp_path, monkeypatch):
     executable = tmp_path / "fake-yolo"
-    fake_yolo(executable)
+    fake_yolo(executable, monkeypatch)
     monkeypatch.setenv("YWA_YOLO_EXECUTABLE", str(executable))
     dataset_id, _ = prepared_dataset(client)
-    upload_unannotated_image(client, dataset_id, "train", "train_unlabelled.png")
-    upload_unannotated_image(client, dataset_id, "val", "val_unlabelled.png")
-
-    response = client.post(
-        "/api/training/tasks",
-        json={"dataset_id": dataset_id, "name": "export-stats", "model": "yolo11n.pt", "epochs": 1, "batch_size": 1},
-    )
+    for split in ("train", "val"):
+        image = upload_unannotated_image(client, dataset_id, split, split + "_empty.png")
+        confirm_image(client, dataset_id, image["id"], confirmed_empty=True)
+    response = client.post("/api/training/tasks", json={"dataset_id": dataset_id, "name": "export-stats", "model": "yolo11n.pt", "epochs": 1, "batch_size": 1})
     assert response.status_code == 201, response.text
     task_id = response.json()["id"]
-
     summary = client.get(f"/api/training/tasks/{task_id}/summary").json()
     stats = summary["export_stats"]
-    assert stats["counts"] == {"train": 1, "val": 1, "test": 0}
+    assert stats["counts"] == {"train": 2, "val": 2, "test": 0}
     assert stats["annotated_image_counts"] == {"train": 1, "val": 1, "test": 0}
     assert stats["total_image_counts"] == {"train": 2, "val": 2, "test": 0}
-    assert stats["skipped_image_counts"] == {"train": 1, "val": 1, "test": 0}
+    assert stats["skipped_image_counts"] == {"train": 0, "val": 0, "test": 0}
     assert stats["label_count"] == 2
     assert "val_split_too_small" in summary["risks"]
-
     assert wait_for_terminal(client, task_id)["status"] == "completed"
 
 
@@ -604,7 +514,7 @@ def test_validation_split_small_risk_thresholds():
 
 def test_running_training_can_be_stopped(client, tmp_path, monkeypatch):
     executable = tmp_path / "slow-yolo"
-    slow_yolo(executable)
+    slow_yolo(executable, monkeypatch)
     monkeypatch.setenv("YWA_YOLO_EXECUTABLE", str(executable))
     dataset_id, _ = prepared_dataset(client)
     response = client.post(

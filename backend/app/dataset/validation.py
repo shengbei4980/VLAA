@@ -110,11 +110,14 @@ def validate_dataset(session: Session, storage: Storage, dataset_id: str) -> Val
                         image.height,
                     )
                 elif annotation.type == "polygon":
-                    validate_polygon(
-                        [tuple(point) for point in (annotation.polygon or [])],
-                        image.width,
-                        image.height,
-                    )
+                    if annotation.mask_ref:
+                        from app.dataset.annotation.masks import MaskService
+
+                        mask = MaskService(storage).decode(annotation.mask_ref)
+                        if mask.shape != (image.height, image.width) or not mask.any():
+                            raise ValueError("Mask dimensions or area are invalid.")
+                    else:
+                        validate_polygon([tuple(point) for point in (annotation.polygon or [])], image.width, image.height)
                 elif annotation.type == "obb":
                     validate_obb(OBB(**(annotation.obb or {})), image.width, image.height)
             except Exception as exc:

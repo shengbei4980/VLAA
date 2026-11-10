@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import subprocess
 import threading
+import os
+import sys
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from app.core.models import ModelEvaluationRecord, ModelVersion
 from app.core.time import utc_now
@@ -12,14 +14,17 @@ from app.core.storage import Storage
 from app.training.observability.log_store import TrainingLogStore
 from app.training.observability.metrics import TrainingMetricsParser
 from app.training.runtime.runner import resolve_yolo_command_prefix
+from app.training.runtime.process_registry import process_registry
+from app.core.local_compute import local_compute_gate, release_local_models
 
 
 def build_evaluation_command(record: ModelEvaluationRecord, model: ModelVersion) -> list[str]:
     if not record.data_path or not record.run_dir:
         raise ValueError("Evaluation export or run directory is missing.")
     run_path = Path(record.run_dir)
+    prefix = [sys.executable, "-m", "app.training.maskaware"] if (record.result_json or {}).get("mask_aware") else resolve_yolo_command_prefix()
     return [
-        *resolve_yolo_command_prefix(),
+        *prefix,
         model.task_type,
         "val",
         f"model={model.model_path}",
@@ -41,21 +46,28 @@ def run_evaluation_process(record: ModelEvaluationRecord, model: ModelVersion) -
     command = build_evaluation_command(record, model)
     log_store = TrainingLogStore(record.logs_path or Path(record.run_dir or ".") / "evaluation.log")
     log_store.append("Command: " + " ".join(command))
-    process = subprocess.Popen(command,
-    stdout=subprocess.PIPE,
-    stderr=subprocess.STDOUT,
-    text=True,
-    encoding="utf-8",
-    errors="replace",
-    shell=False,
-    bufsize=1)
-    assert process.stdout is not None
-    lines: list[str] = []
-    for line in process.stdout:
-        clean = line.rstrip("\n")
-        lines.append(clean)
-        log_store.append(clean)
-    return_code = process.wait()
+    with local_compute_gate.acquire():
+        release_local_models()
+        if process_registry.stop_requested(record.id):
+            process_registry.unregister(record.id)
+            return -1, log_store.read(), {}
+        process = subprocess.Popen(command,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace",
+            shell=False, bufsize=1, start_new_session=os.name == "posix",
+            env={**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [str(Path(__file__).resolve().parents[2]), os.getenv("PYTHONPATH")]))})
+        process_registry.register(record.id, process)
+        lines: list[str] = []
+        try:
+            if process_registry.stop_requested(record.id):
+                process_registry.request_stop(record.id)
+            assert process.stdout is not None
+            for line in process.stdout:
+                clean = line.rstrip("\n")
+                lines.append(clean)
+                log_store.append(clean)
+            return_code = process.wait()
+        finally:
+            process_registry.unregister(record.id)
     return return_code, log_store.read(), parse_validation_metrics("\n".join(lines), model.task_type)
 
 
@@ -71,17 +83,18 @@ class YoloEvaluationRunner:
         self.storage = storage
 
     def start_task(self, task_id: str) -> None:
-        threading.Thread(target=self.run, args=(task_id,), daemon=True).start()
+        threading.Thread(target=self.run, args=(task_id,), name=f"ywa-evaluation-{task_id}", daemon=True).start()
 
     def run(self, task_id: str) -> None:
         from app.models.service import ModelService
 
         with self.session_factory() as session:
-            record = session.get(ModelEvaluationRecord, task_id)
-            if record is None or record.status != "pending":
+            claimed = session.execute(update(ModelEvaluationRecord).where(
+                ModelEvaluationRecord.id == task_id, ModelEvaluationRecord.status == "pending",
+            ).values(status="running", started_at=utc_now()))
+            if claimed.rowcount != 1:
+                session.rollback()
                 return
-            record.status = "running"
-            record.started_at = utc_now()
             session.commit()
             ModelService(self.storage).run_evaluation(session, task_id)
 

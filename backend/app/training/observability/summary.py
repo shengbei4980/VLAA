@@ -58,6 +58,8 @@ def write_training_summary(task: TrainingTask, dataset: Dataset) -> dict:
         risks.append("metrics_missing")
     if _validation_split_too_small(export_stats):
         risks.append("val_split_too_small")
+    if (task.config_json or {}).get("mask_aware"):
+        risks.append("prototype_cells_touching_ignore_or_padding_excluded")
     summary = {
         "task_id": task.id,
         "status": task.status,

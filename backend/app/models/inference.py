@@ -19,6 +19,11 @@ class ModelCache:
     _max_size = 3
 
     @classmethod
+    def clear(cls) -> None:
+        cls._cache.clear()
+        cls._last_access.clear()
+
+    @classmethod
     def get_model(cls, model_id: str, model_path: Path) -> Any:
         now = time.time()
         if model_id in cls._cache:
@@ -43,7 +48,10 @@ def run_test_inference(*, model_id: str, model_path: Path, task_type: str, image
     try:
         started = time.perf_counter()
         actual_confidence = min(confidence, 0.01) if confidence > 0 else 0.01
-        result = _serialize_inference_result(model_id, task_type, class_names, _run_inference(model_id, model_path, task_type, temporary_path, actual_confidence, iou))
+        from app.core.local_compute import local_compute_gate
+
+        with local_compute_gate.acquire():
+            result = _serialize_inference_result(model_id, task_type, class_names, _run_inference(model_id, model_path, task_type, temporary_path, actual_confidence, iou))
         result["inference_time_ms"] = (time.perf_counter() - started) * 1000
         return result
     except Exception as exc:
@@ -55,7 +63,10 @@ def run_test_inference(*, model_id: str, model_path: Path, task_type: str, image
 def run_managed_inference(*, model_id: str, model_path: Path, task_type: str, image_path: Path, confidence: float, iou: float, class_names: dict[int, str]) -> list:
     """Run the same cached Ultralytics/parser path used by model quick-test on a managed image."""
 
-    return _run_inference(model_id, model_path, task_type, image_path, confidence, iou)
+    from app.core.local_compute import local_compute_gate
+
+    with local_compute_gate.acquire():
+        return _run_inference(model_id, model_path, task_type, image_path, confidence, iou)
 
 
 def _run_inference(model_id: str, model_path: Path, task_type: str, image_path: Path, confidence: float, iou: float) -> list:

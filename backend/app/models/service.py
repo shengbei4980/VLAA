@@ -72,6 +72,7 @@ class ModelService:
                 model.artifact_type = artifact_type
                 model.model_path = str(destination)
                 model.base_model = task.model_name
+                model.class_schema_json = list((task.config_json or {}).get("class_schema", []))
                 self._apply_metrics(model, task.metrics_json or {})
                 registered.append(model)
             session.commit()
@@ -210,6 +211,7 @@ class ModelService:
                 raise RuntimeError("ONNX exporter did not produce a managed file.")
             export_model.model_path = str(exported_path)
             export_model.metrics_json = dict(source_model.metrics_json or {})
+            export_model.class_schema_json = list(source_model.class_schema_json or [])
             self._apply_metrics(export_model, export_model.metrics_json)
             session.commit()
             session.refresh(export_model)
@@ -226,7 +228,8 @@ class ModelService:
             raise ValidationError("unsupported_model_engine", "Quick test currently requires a managed Ultralytics PT model.")
         path = self.download_path(session, model.id)
         classes = list(session.scalars(select(ClassLabel).where(ClassLabel.dataset_id == model.dataset_id))) if model.dataset_id else []
-        return run_test_inference(model_id=model.id, model_path=path, task_type=model.task_type, image_bytes=image_bytes, confidence=confidence, iou=iou, class_names={item.class_index: item.name for item in classes})
+        names = {item["index"]: item["name"] for item in model.class_schema_json} if model.class_schema_json else {item.class_index: item.name for item in classes}
+        return run_test_inference(model_id=model.id, model_path=path, task_type=model.task_type, image_bytes=image_bytes, confidence=confidence, iou=iou, class_names=names)
 
     def save_test_record(self, session: Session, model_id: str, file_name: str, image_bytes: bytes, result: dict) -> ModelTestRecord:
         self.get_model(session, model_id)
@@ -251,6 +254,7 @@ class ModelService:
         iou: float,
         *,
         evaluation_id: str | None = None,
+        snapshot_id: str | None = None,
     ) -> ModelEvaluationRecord:
         model = self.get_model(session, model_id)
         if not model.dataset_id:
@@ -258,18 +262,28 @@ class ModelService:
         if model.format != "pt" or model.engine_type != "ultralytics":
             raise ValidationError("unsupported_model_engine", "Local evaluation requires a managed Ultralytics PT model.")
         self.download_path(session, model.id)
-        image_count = session.scalar(select(func.count()).select_from(ImageItem).where(ImageItem.dataset_id == model.dataset_id, ImageItem.split == split)) or 0
-        if not image_count:
-            raise ValidationError("evaluation_split_empty", f"The {split} split has no images to evaluate.")
         if evaluation_id:
             existing = session.get(ModelEvaluationRecord, evaluation_id)
             if existing is not None:
+                if existing.model_id != model.id or existing.split != split:
+                    raise ConflictError("evaluation_scope_conflict", "This evaluation ID belongs to another model or split.")
                 return existing
+        from app.dataset.snapshots import create_snapshot, get_snapshot
+        from app.dataset.exchange.snapshot import export_snapshot_directory
+
         resolved_id = evaluation_id or new_id("eval")
+        if snapshot_id is None:
+            image_ids = list(session.scalars(select(ImageItem.id).where(ImageItem.dataset_id == model.dataset_id, ImageItem.split == split)))
+            snapshot = create_snapshot(session, self.storage, model.dataset_id, image_ids=image_ids,
+                                       snapshot_id=f"snapshot_{resolved_id}")
+        else:
+            snapshot = get_snapshot(session, self.storage, snapshot_id)
+            if snapshot["manifest"]["dataset_id"] != model.dataset_id or snapshot["manifest"]["task_type"] != model.task_type:
+                raise ValidationError("evaluation_snapshot_mismatch", "Evaluation requires a snapshot matching this model's dataset and task.")
         task_root = self.storage.evaluation_task_dir(resolved_id)
         try:
-            export = export_dataset_directory(session, self.storage, model.dataset_id, task_root / "dataset")
-            if not export["annotated_image_counts"].get(split):
+            export = export_snapshot_directory(snapshot, self.storage, task_root / "dataset")
+            if not export["counts"].get(split):
                 raise ValidationError("evaluation_split_empty", f"The exported {split} split has no annotated images to evaluate.")
             record = ModelEvaluationRecord(
                 id=resolved_id,
@@ -279,7 +293,7 @@ class ModelService:
                 status="pending",
                 confidence=confidence,
                 iou=iou,
-                result_json={},
+                result_json={"snapshot_id": snapshot["id"], "mask_aware": export["mask_aware"]},
                 export_path=str(export["root"]),
                 data_path=str(export["data_yaml"]),
                 run_dir=str(task_root / "run"),
@@ -301,9 +315,13 @@ class ModelService:
         model = self.get_model(session, record.model_id)
         try:
             return_code, _logs, metrics = run_evaluation_process(record, model)
+            session.refresh(record)
+            if record.status == "stopped" or (record.result_json or {}).get("stop_requested"):
+                return
             run_dir = Path(record.run_dir or "")
             artifacts = EvaluationArtifactManager().find_artifacts(run_dir)
             record.result_json = {
+                **dict(record.result_json or {}),
                 "split": record.split,
                 "task_type": model.task_type,
                 "metrics": metrics,
@@ -317,10 +335,28 @@ class ModelService:
             record.finished_at = utc_now()
             session.commit()
         except Exception as exc:
+            session.refresh(record)
+            if record.status == "stopped":
+                return
             record.status = "failed"
             record.error_message = str(exc)
             record.finished_at = utc_now()
             session.commit()
+
+    def stop_evaluation(self, session: Session, evaluation_id: str) -> ModelEvaluationRecord:
+        from app.training.runtime.process_registry import process_registry
+
+        record = session.get(ModelEvaluationRecord, evaluation_id)
+        if record is None:
+            raise NotFoundError("evaluation_not_found", "Evaluation was not found.")
+        if record.status in {"pending", "running"}:
+            record.status = "stopped"
+            record.result_json = {**dict(record.result_json or {}), "stop_requested": True}
+            record.error_message = "Evaluation stopped by user."
+            record.finished_at = utc_now()
+            session.commit()
+            process_registry.request_stop(evaluation_id)
+        return record
 
     def list_evaluations(self, session: Session, model_id: str) -> list[ModelEvaluationRecord]:
         self.get_model(session, model_id)

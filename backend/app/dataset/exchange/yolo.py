@@ -7,7 +7,7 @@ import re
 import shutil
 import zipfile
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import yaml
 from sqlalchemy import select
@@ -191,6 +191,13 @@ def _classification_for_image(annotations: list[Annotation]) -> Annotation | Non
     return classified[0] if classified else None
 
 
+def safe_class_directory(name: str) -> str:
+    if (not name or name in {".", ".."} or any(character in name for character in '/\\:*?"<>|')
+            or name.endswith((" ", ".")) or PureWindowsPath(name).is_reserved()):
+        raise ValidationError("invalid_class_directory", "Classification labels used as folders must be valid local directory names.")
+    return name
+
+
 def _parse_yolo_labels(
     content: bytes | None,
     task_type: str,
@@ -270,11 +277,17 @@ def _parse_yolo_labels(
     return annotations
 
 
-def export_dataset(session: Session, storage: Storage, dataset_id: str) -> tuple[bytes, str]:
+def export_dataset(session: Session, storage: Storage, dataset_id: str, *, image_ids: list[str] | None = None) -> tuple[bytes, str]:
+    from app.dataset.annotation.review import require_confirmed
+
+    confirmed = require_confirmed(session, storage, dataset_id, image_ids)
+    selected_ids = [item["image_id"] for item in confirmed]
     dataset = get_dataset(session, dataset_id)
     classes = list(session.scalars(select(ClassLabel).where(ClassLabel.dataset_id == dataset_id).order_by(ClassLabel.class_index)))
-    images = list(session.scalars(select(ImageItem).where(ImageItem.dataset_id == dataset_id).order_by(ImageItem.split, ImageItem.id)))
-    annotations = list(session.scalars(select(Annotation).where(Annotation.dataset_id == dataset_id).order_by(Annotation.image_id, Annotation.id)))
+    images = list(session.scalars(select(ImageItem).where(ImageItem.dataset_id == dataset_id, ImageItem.id.in_(selected_ids)).order_by(ImageItem.split, ImageItem.id)))
+    annotations = list(session.scalars(select(Annotation).where(Annotation.dataset_id == dataset_id, Annotation.image_id.in_(selected_ids)).order_by(Annotation.image_id, Annotation.id)))
+    if any(image.roi_mask_ref or image.ignore_mask_ref for image in images):
+        raise ValidationError("yolo_ignore_unsupported", "YOLO text labels cannot preserve ROI/ignore supervision. Export COCO RLE or use snapshot training.")
     annotations_by_image: dict[str, list[Annotation]] = {}
     for annotation in annotations:
         annotations_by_image.setdefault(annotation.image_id, []).append(annotation)
@@ -303,7 +316,7 @@ def export_dataset(session: Session, storage: Storage, dataset_id: str) -> tuple
                 class_name = class_names.get(annotation.class_id)
                 if class_name is None:
                     raise ValidationError("annotation_class_mismatch", "Annotation class does not belong to this dataset.")
-                archive.writestr(f"{image.split}/{class_name}/{export_stem}{suffix}", path.read_bytes())
+                archive.writestr(f"{image.split}/{safe_class_directory(class_name)}/{export_stem}{suffix}", path.read_bytes())
                 continue
             archive.writestr(f"images/{image.split}/{export_stem}{suffix}", path.read_bytes())
             label_lines: list[str] = []
@@ -318,9 +331,12 @@ def export_dataset(session: Session, storage: Storage, dataset_id: str) -> tuple
                         f"{class_index} {center_x:.8f} {center_y:.8f} {(annotation.width or 0) / image.width:.8f} {(annotation.height or 0) / image.height:.8f}"
                     )
                 elif annotation.type == "polygon":
-                    points = annotation.polygon or []
-                    normalized = " ".join(f"{point[0] / image.width:.8f} {point[1] / image.height:.8f}" for point in points)
-                    label_lines.append(f"{class_index} {normalized}")
+                    from app.dataset.exchange.snapshot import yolo_annotation_line
+
+                    label_lines.append(yolo_annotation_line(
+                        {"type": "polygon", "class_id": annotation.class_id, "polygon": annotation.polygon,
+                         "mask_ref": annotation.mask_ref, "object_id": annotation.object_id},
+                        {"id": image.id, "width": image.width, "height": image.height}, class_indexes, storage))
                 elif annotation.type == "obb":
                     label_lines.append(f"{class_index} {_obb_to_yolo(annotation.obb, image.width, image.height)}")
                 else:
@@ -336,6 +352,7 @@ def export_dataset_directory(
     target_dir: Path,
     *,
     include_unannotated: bool = False,
+    image_ids: list[str] | None = None,
 ) -> dict[str, object]:
     """Materialize a training-ready YOLO directory using persisted image splits.
 
@@ -346,6 +363,10 @@ def export_dataset_directory(
     auto-annotation versions, so training and evaluation stay conservative.
     """
 
+    from app.dataset.annotation.review import require_confirmed
+
+    confirmed = require_confirmed(session, storage, dataset_id, image_ids)
+    selected_ids = [item["image_id"] for item in confirmed]
     dataset = get_dataset(session, dataset_id)
     classes = list(
         session.scalars(
@@ -354,15 +375,17 @@ def export_dataset_directory(
     )
     images = list(
         session.scalars(
-            select(ImageItem).where(ImageItem.dataset_id == dataset_id).order_by(ImageItem.split, ImageItem.id)
+            select(ImageItem).where(ImageItem.dataset_id == dataset_id, ImageItem.id.in_(selected_ids)).order_by(ImageItem.split, ImageItem.id)
         )
     )
     annotations = list(
         session.scalars(
-            select(Annotation).where(Annotation.dataset_id == dataset_id).order_by(Annotation.image_id, Annotation.id)
+            select(Annotation).where(Annotation.dataset_id == dataset_id, Annotation.image_id.in_(selected_ids)).order_by(Annotation.image_id, Annotation.id)
         )
     )
     target = Path(target_dir).expanduser().resolve()
+    if any(image.roi_mask_ref or image.ignore_mask_ref for image in images):
+        raise ValidationError("yolo_ignore_unsupported", "Use the snapshot adapter to preserve ROI/ignore supervision.")
     target.mkdir(parents=True, exist_ok=True)
     class_indexes = {item.id: item.class_index for item in classes}
     class_names = {item.id: item.name for item in classes}
@@ -384,7 +407,7 @@ def export_dataset_directory(
             raise ValidationError("image_file_missing", f"Managed image file is missing: {image.file_name}.")
         stem = f"{image.id}_{PurePosixPath(image.file_name).stem}"
         image_annotations = annotations_by_image.get(image.id, [])
-        if not include_unannotated and not image_annotations:
+        if not include_unannotated and not image_annotations and image.review_status != "confirmed_empty":
             skipped_image_counts[image.split] += 1
             continue
         if dataset.task_type == "classify":
@@ -395,7 +418,7 @@ def export_dataset_directory(
             class_name = class_names.get(annotation.class_id)
             if class_name is None:
                 raise ValidationError("annotation_class_mismatch", "Annotation class does not belong to this dataset.")
-            image_destination = target / image.split / class_name / f"{stem}{source.suffix.lower()}"
+            image_destination = target / image.split / safe_class_directory(class_name) / f"{stem}{source.suffix.lower()}"
             image_destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, image_destination)
             counts[image.split] += 1
@@ -419,11 +442,12 @@ def export_dataset_directory(
                     f"{class_index} {center_x:.8f} {center_y:.8f} {(annotation.width or 0) / image.width:.8f} {(annotation.height or 0) / image.height:.8f}"
                 )
             elif annotation.type == "polygon":
-                normalized = " ".join(
-                    f"{point[0] / image.width:.8f} {point[1] / image.height:.8f}"
-                    for point in (annotation.polygon or [])
-                )
-                lines.append(f"{class_index} {normalized}")
+                from app.dataset.exchange.snapshot import yolo_annotation_line
+
+                lines.append(yolo_annotation_line(
+                    {"type": "polygon", "class_id": annotation.class_id, "polygon": annotation.polygon,
+                     "mask_ref": annotation.mask_ref, "object_id": annotation.object_id},
+                    {"id": image.id, "width": image.width, "height": image.height}, class_indexes, storage))
             elif annotation.type == "obb":
                 lines.append(f"{class_index} {_obb_to_yolo(annotation.obb, image.width, image.height)}")
             else:
@@ -565,6 +589,7 @@ def import_dataset(
                     annotation.dataset_id = dataset.id
                 session.add_all(parsed)
                 image.status = "annotated" if parsed else "unannotated"
+                image.annotation_revision = 1
                 imported_annotations += len(parsed)
             refresh_dataset_counts(session, dataset.id)
             session.commit()

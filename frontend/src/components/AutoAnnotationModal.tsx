@@ -9,9 +9,7 @@ export function AutoAnnotationModal({ dataset, onClose, onChanged }: { dataset: 
   const [modelId, setModelId] = useState("");
   const [confidence, setConfidence] = useState(0.25);
   const [iou, setIou] = useState(0.45);
-  const [cleanOld, setCleanOld] = useState(false);
   const [skipAnnotated, setSkipAnnotated] = useState(true);
-  const [confirmCleanOld, setConfirmCleanOld] = useState(false);
   const [targetClasses, setTargetClasses] = useState<ClassLabel[]>([]);
   const [sourceClasses, setSourceClasses] = useState<ClassLabel[]>([]);
   const [classMapping, setClassMapping] = useState<Record<string, string>>({});
@@ -45,7 +43,9 @@ export function AutoAnnotationModal({ dataset, onClose, onChanged }: { dataset: 
     }
     let active = true;
     setClassesLoading(true);
-    api.listClasses(selectedModel.dataset_id)
+    const frozenClasses = selectedModel.class_schema_json;
+    const sourceRequest = frozenClasses?.length ? Promise.resolve(frozenClasses.map((item) => ({ id: item.id, dataset_id: selectedModel.dataset_id!, class_index: item.index, name: item.name, color: item.color ?? "#22c55e", created_at: "", updated_at: "" }))) : api.listClasses(selectedModel.dataset_id);
+    sourceRequest
       .then((source) => {
         if (!active) return;
         setSourceClasses(source);
@@ -55,7 +55,7 @@ export function AutoAnnotationModal({ dataset, onClose, onChanged }: { dataset: 
       .catch((reason) => { if (active) setError(reason instanceof Error ? reason.message : "读取模型类别失败"); })
       .finally(() => { if (active) setClassesLoading(false); });
     return () => { active = false; };
-  }, [selectedModel?.dataset_id, targetClasses]);
+  }, [selectedModel?.id, selectedModel?.dataset_id, targetClasses]);
 
   useEffect(() => {
     if (!task || terminalStatuses.has(task.status)) return;
@@ -88,8 +88,8 @@ export function AutoAnnotationModal({ dataset, onClose, onChanged }: { dataset: 
     setBusy(true);
     setError("");
     try {
-      const mapping = Object.fromEntries(Object.entries(classMapping).filter(([, targetId]) => Boolean(targetId)));
-      const created = await api.createAutoAnnotation(dataset.id, { model_id: modelId, confidence, iou, clean_old_annotations: cleanOld, skip_annotated_images: skipAnnotated, class_mapping: mapping });
+      const mapping = Object.fromEntries(Object.entries(classMapping).map(([index, targetId]) => [index, targetId || null]));
+      const created = await api.createAutoAnnotation(dataset.id, { model_id: modelId, confidence, iou, clean_old_annotations: false, skip_annotated_images: skipAnnotated, class_mapping: mapping });
       setTask(created);
       setLog(undefined);
     } catch (reason) {
@@ -107,7 +107,7 @@ export function AutoAnnotationModal({ dataset, onClose, onChanged }: { dataset: 
 
   return <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
     <section className="dataset-dialog auto-annotation-dialog" role="dialog" aria-modal="true" aria-labelledby="auto-annotation-title" onMouseDown={(event) => event.stopPropagation()}>
-      <header><div><span className="eyebrow">AUTO ANNOTATION</span><h2 id="auto-annotation-title">自动标注“{dataset.name}”</h2><p>选择一个受管模型生成初始标注，完成后仍可在标注页逐张审核、修改或删除。</p></div><button className="icon-button" onClick={onClose} aria-label="关闭">×</button></header>
+      <header><div><span className="eyebrow">AUTO ANNOTATION</span><h2 id="auto-annotation-title">自动标注“{dataset.name}”</h2><p>选择受管模型生成待审候选，逐张核对并保存后，需要整图确认才能用于训练或发布导出。</p></div><button className="icon-button" onClick={onClose} aria-label="关闭">×</button></header>
       {!task && <>
         {loading ? <p className="auto-annotation-empty">正在读取可用模型…</p> : models.length ? <>
           <label>模型<select value={modelId} onChange={(event) => setModelId(event.target.value)}>{models.map((model) => <option key={model.id} value={model.id}>{model.name} · {model.artifact_type.toUpperCase()}</option>)}</select></label>
@@ -115,11 +115,9 @@ export function AutoAnnotationModal({ dataset, onClose, onChanged }: { dataset: 
           <section className="auto-annotation-mapping"><div><strong>类别映射</strong><small>未映射的模型类别会跳过，绝不会按类别索引猜测。</small></div>{classesLoading ? <p className="hint">正在读取模型类别…</p> : sourceClasses.map((source) => <label key={source.id}><span>{source.class_index}: {source.name}</span><select value={classMapping[String(source.class_index)] ?? ""} onChange={(event) => setClassMapping((current) => ({ ...current, [String(source.class_index)]: event.target.value }))}><option value="">忽略此类别</option>{targetClasses.map((target) => <option key={target.id} value={target.id}>{target.class_index}: {target.name}</option>)}</select></label>)}</section>
           <div className="auto-annotation-controls"><label>置信度 <strong>{confidence.toFixed(2)}</strong><input type="range" min="0.01" max="0.99" step="0.01" value={confidence} onChange={(event) => setConfidence(Number(event.target.value))} /></label><label>IoU <strong>{iou.toFixed(2)}</strong><input type="range" min="0" max="0.99" step="0.01" value={iou} onChange={(event) => setIou(Number(event.target.value))} /></label></div>
           <label className="auto-annotation-checkbox"><input type="checkbox" checked={skipAnnotated} onChange={(event) => setSkipAnnotated(event.target.checked)} /><span><strong>跳过已有标注的图片（推荐）</strong><small>默认只处理没有任何人工、导入或自动标注的图片，避免重复标注。</small></span></label>
-          <label className="auto-annotation-checkbox"><input type="checkbox" checked={cleanOld} onChange={(event) => { setCleanOld(event.target.checked); setSkipAnnotated(!event.target.checked); setConfirmCleanOld(false); }} /><span><strong>清理旧标注</strong><small>开启后会处理已有标注图片，并在写入前删除其全部标注。</small></span></label>
-          {cleanOld && <label className="auto-annotation-checkbox danger"><input type="checkbox" checked={confirmCleanOld} onChange={(event) => setConfirmCleanOld(event.target.checked)} /><span><strong>我理解这会删除每张图片现有的全部标注</strong><small>包括人工、导入和先前自动生成的标注，且无法撤销。</small></span></label>}
         </> : <p className="auto-annotation-empty">当前没有匹配的受管 PT 模型。请先完成一次本地训练并登记模型。</p>}
         {error && <div className="validation invalid"><span>{error}</span></div>}
-        <footer><button className="button" onClick={onClose}>取消</button><button className="button primary" disabled={busy || loading || classesLoading || !modelId || !mappedClassCount || (cleanOld && !confirmCleanOld)} onClick={() => void start()}>{busy ? "正在启动…" : "开始自动标注"}</button></footer>
+        <footer><button className="button" onClick={onClose}>取消</button><button className="button primary" disabled={busy || loading || classesLoading || !modelId || !mappedClassCount} onClick={() => void start()}>{busy ? "正在启动…" : "开始自动标注"}</button></footer>
       </>}
       {task && <>
         <div className="auto-annotation-status"><div><span className={`auto-annotation-status-dot ${task.status}`} /><strong>{statusLabel(task.status)}</strong><span>{task.processed_images} / {task.total_images} 张图片</span></div><b>{Math.round(task.progress_percent)}%</b></div>
@@ -127,7 +125,7 @@ export function AutoAnnotationModal({ dataset, onClose, onChanged }: { dataset: 
         <div className="auto-annotation-summary"><span><small>生成标注</small><strong>{task.created_annotations}</strong></span><span><small>跳过图片</small><strong>{task.skipped_images}</strong></span><span><small>置信度</small><strong>{task.confidence.toFixed(2)}</strong></span></div>
         {task.error_message && <div className={task.status === "failed" ? "validation invalid" : "validation"}><span>{task.error_message}</span></div>}
         {log?.logs && <pre className="auto-annotation-log">{log.logs}</pre>}
-        <footer>{running ? <button className="button danger" disabled={busy || task.stop_requested} onClick={() => void stop()}>{task.stop_requested ? "正在停止…" : "取消任务"}</button> : <span className="hint">结果已写入数据集，请继续人工审核。</span>}<button className="button" onClick={onClose}>{running ? "后台运行" : "完成"}</button></footer>
+        <footer>{running ? <button className="button danger" disabled={busy || task.stop_requested} onClick={() => void stop()}>{task.stop_requested ? "正在停止…" : "取消任务"}</button> : <span className="hint">候选已保存到待审区，请在标注页载入、复核并确认。</span>}<button className="button" onClick={onClose}>{running ? "后台运行" : "完成"}</button></footer>
       </>}
     </section>
   </div>;

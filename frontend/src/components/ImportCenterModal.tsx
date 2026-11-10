@@ -2,12 +2,14 @@ import { useRef, useState } from "react";
 
 import { VideoImportContent } from "./VideoImportModal";
 import type { TaskType, VideoImportTask } from "../types";
+import { LabelMeImportContent } from "./LabelMeImportContent";
 
-type ImportSource = "yolo" | "coco" | "video";
+type ImportSource = "yolo" | "coco" | "labelme" | "video";
 
 const SOURCES: Array<{ id: ImportSource; icon: string; title: string; detail: string }> = [
   { id: "yolo", icon: "▣", title: "YOLO 数据集", detail: "ZIP · data.yaml、images、labels" },
   { id: "coco", icon: "◎", title: "COCO 数据集", detail: "ZIP · annotations.json 与 images" },
+  { id: "labelme", icon: "◇", title: "LabelMe 数据集", detail: "ZIP · 原图与 JSON，预览后映射类别" },
   { id: "video", icon: "▶", title: "视频文件", detail: "MP4、MOV、AVI · 预检后抽帧" },
 ];
 
@@ -16,11 +18,13 @@ export function ImportCenterModal({
   onClose,
   onArchiveImport,
   onVideoCompleted,
+  onDatasetImported,
 }: {
   busy: boolean;
   onClose: () => void;
   onArchiveImport: (file: File, name: string, taskType: TaskType, format: "yolo" | "coco") => void;
   onVideoCompleted: (task: VideoImportTask) => Promise<void> | void;
+  onDatasetImported?: () => void;
 }) {
   const [source, setSource] = useState<ImportSource>("yolo");
   const [name, setName] = useState("");
@@ -36,7 +40,7 @@ export function ImportCenterModal({
     setDragging(false);
   };
   const importArchive = () => {
-    if (!archive || !name.trim() || source === "video") return;
+    if (!archive || !name.trim() || source === "video" || source === "labelme") return;
     onArchiveImport(archive, name.trim(), taskType, source);
     onClose();
   };
@@ -50,7 +54,7 @@ export function ImportCenterModal({
           {SOURCES.map((item) => <button key={item.id} type="button" className={source === item.id ? "import-source-option selected" : "import-source-option"} onClick={() => chooseSource(item.id)}><span className="import-source-icon" aria-hidden>{item.icon}</span><span><strong>{item.title}</strong><small>{item.detail}</small></span></button>)}
         </aside>
         <section className="import-center-panel">
-          {source === "video" ? <VideoImportContent onClose={onClose} onCompleted={onVideoCompleted} /> : <>
+          {source === "labelme" ? <LabelMeImportContent onClose={onClose} onImported={() => onDatasetImported?.()} /> : source === "video" ? <VideoImportContent onClose={onClose} onCompleted={onVideoCompleted} /> : <>
             <div className="import-center-step"><span>1</span><div><strong>{activeSource.title}</strong><p>{activeSource.detail}</p></div></div>
             <div className="exchange-fields"><label>数据集名称<input value={name} placeholder="例如：road-signs" onChange={(event) => setName(event.target.value)} autoFocus /></label><label>任务类型<select value={taskType} onChange={(event) => setTaskType(event.target.value as TaskType)}><option value="detect">目标检测（Bounding Box）</option><option value="segment">实例分割（Polygon / SAM）</option><option value="obb">旋转框（OBB）</option><option value="classify">图像分类</option></select></label></div>
             <input ref={inputRef} type="file" accept=".zip,application/zip" hidden onChange={(event) => { setArchive(event.target.files?.[0]); event.currentTarget.value = ""; }} />

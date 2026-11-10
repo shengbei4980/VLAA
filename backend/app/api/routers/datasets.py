@@ -114,6 +114,10 @@ def _image_response(item: ImageItem) -> ImageItemResponse:
         height=item.height,
         split=item.split,
         status=item.status,
+        annotation_revision=item.annotation_revision,
+        review_status=item.review_status,
+        roi_mask_ref=item.roi_mask_ref,
+        ignore_mask_ref=item.ignore_mask_ref,
         source_type=item.source_type,
         source_file=item.source_file,
         source_group_id=item.source_group_id,
@@ -331,11 +335,14 @@ def put_image_annotations(
     image_id: str,
     payload: ReplaceAnnotationsRequest,
     session: Session = Depends(get_session),
+    storage: Storage = Depends(get_storage),
 ) -> list[AnnotationResponse]:
     image = get_image(session, image_id)
     if image.dataset_id != dataset_id:
         raise NotFoundError("image_not_found", "Image was not found in this dataset.")
-    return replace_annotations(session, image_id, payload.annotations)
+    regions = payload.model_dump(include={"roi_mask_ref", "ignore_mask_ref"}, exclude_unset=True)
+    return replace_annotations(session, image_id, payload.annotations, storage=storage,
+                               expected_revision=payload.expected_revision, regions=regions)
 
 
 @router.post("/{dataset_id}/validate", response_model=ValidationReport)
@@ -377,16 +384,18 @@ def export_yolo_archive(
     dataset_id: str,
     session: Session = Depends(get_session),
     storage: Storage = Depends(get_storage),
+    image_ids: list[str] | None = Query(default=None),
 ) -> FileResponse:
-    content, file_name = export_dataset(session, storage, dataset_id)
+    content, file_name = export_dataset(session, storage, dataset_id, image_ids=image_ids)
     output_path = storage.export_path(f"{new_id('yolo')}_{Path(file_name).name}")
     output_path.write_bytes(content)
     return FileResponse(output_path, media_type="application/zip", filename=file_name)
 
 
 @router.get("/{dataset_id}/export/coco")
-def export_coco_archive(dataset_id: str, session: Session = Depends(get_session), storage: Storage = Depends(get_storage)) -> FileResponse:
-    content, file_name = export_coco(session, storage, dataset_id)
+def export_coco_archive(dataset_id: str, session: Session = Depends(get_session), storage: Storage = Depends(get_storage),
+                        image_ids: list[str] | None = Query(default=None)) -> FileResponse:
+    content, file_name = export_coco(session, storage, dataset_id, image_ids=image_ids)
     output_path = storage.export_path(f"{new_id('coco')}_{Path(file_name).name}")
     output_path.write_bytes(content)
     return FileResponse(output_path, media_type="application/zip", filename=file_name)

@@ -86,6 +86,9 @@ def create_class(session: Session, dataset_id: str, payload: ClassLabelCreate) -
     try:
         session.flush()
         refresh_dataset_counts(session, dataset_id)
+        from app.dataset.annotation.review import invalidate_dataset_reviews
+
+        invalidate_dataset_reviews(session, dataset_id)
         session.commit()
     except IntegrityError as exc:
         session.rollback()
@@ -112,5 +115,10 @@ def delete_class(session: Session, dataset_id: str, class_id: str) -> None:
     )
     for index, item in enumerate(remaining):
         item.class_index = index
+        # Free the next index before SQLAlchemy can batch a later row ahead of it.
+        session.flush()
     refresh_dataset_counts(session, dataset_id)
+    from app.dataset.annotation.review import invalidate_dataset_reviews
+
+    invalidate_dataset_reviews(session, dataset_id)
     session.commit()

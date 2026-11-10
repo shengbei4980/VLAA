@@ -67,8 +67,11 @@ def test_auto_annotation_runs_as_a_reviewable_dataset_task(client, monkeypatch):
     assert task["created_annotations"] == 1
     annotations = client.get(f"/api/datasets/{dataset_id}/images/{image_id}/annotations")
     assert annotations.status_code == 200
-    assert annotations.json()[0]["source"] == "auto"
-    assert annotations.json()[0]["class_id"] == class_id
+    assert annotations.json() == []
+    review = client.get(f"/api/datasets/{dataset_id}/images/{image_id}/review").json()
+    assert review["review_status"] == "pending"
+    assert review["draft"]["annotations"][0]["source"] == "auto"
+    assert review["draft"]["annotations"][0]["class_id"] == class_id
     logs = client.get(f"/api/auto-annotation/{task_id}/logs")
     assert logs.status_code == 200
     assert "Auto annotation completed" in logs.json()["logs"]
@@ -107,7 +110,9 @@ def test_auto_annotation_requires_explicit_mapping_for_different_model_classes(c
     assert task["status"] == "completed", task
     image_id = uploaded.json()["items"][0]["id"]
     annotations = client.get(f"/api/datasets/{target['id']}/images/{image_id}/annotations").json()
-    assert annotations[0]["class_id"] == target_class_id
+    assert annotations == []
+    draft = client.get(f"/api/datasets/{target['id']}/images/{image_id}/review").json()["draft"]
+    assert draft["annotations"][0]["class_id"] == target_class_id
 
 
 def test_model_with_active_auto_annotation_task_cannot_be_deleted(client):
@@ -156,7 +161,9 @@ def test_auto_annotation_skips_images_that_already_have_annotations(client, monk
     existing_annotations = client.get(f"/api/datasets/{dataset_id}/images/{first['id']}/annotations").json()
     new_annotations = client.get(f"/api/datasets/{dataset_id}/images/{second['id']}/annotations").json()
     assert [item["source"] for item in existing_annotations] == ["manual"]
-    assert [item["source"] for item in new_annotations] == ["auto"]
+    assert new_annotations == []
+    draft = client.get(f"/api/datasets/{dataset_id}/images/{second['id']}/review").json()["draft"]
+    assert [item["source"] for item in draft["annotations"]] == ["auto"]
 
 
 @pytest.mark.parametrize(
@@ -189,7 +196,9 @@ def test_auto_annotation_persists_every_supported_task_type(client, monkeypatch,
     assert task["status"] == "completed", task
     image_id = uploaded.json()["items"][0]["id"]
     annotations = client.get(f"/api/datasets/{dataset_id}/images/{image_id}/annotations").json()
-    assert annotations[0]["type"] == annotation_type
+    assert annotations == []
+    draft = client.get(f"/api/datasets/{dataset_id}/images/{image_id}/review").json()["draft"]
+    assert draft["annotations"][0]["type"] == annotation_type
 
 
 def _wait_for_terminal_task(client, task_id: str) -> dict:

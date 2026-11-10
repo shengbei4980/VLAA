@@ -35,13 +35,14 @@ export function apiUrl(path: string): string {
   return `${API_BASE}${path}`;
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(apiUrl(path), init);
   if (!response.ok) {
     let message = `Request failed (${response.status})`;
     try {
-      const body = (await response.json()) as { error?: { message?: string } };
-      message = body.error?.message ?? message;
+      const body = (await response.json()) as { error?: { message?: string }; detail?: string | Array<{ loc?: Array<string | number>; msg?: string }> };
+      const detail = Array.isArray(body.detail) ? body.detail.map((item) => `${item.loc?.join(".") ?? "参数"} ${item.msg ?? "无效"}`).join("\n") : body.detail;
+      message = body.error?.message ?? detail ?? message;
     } catch {
       // Keep the HTTP status when the server does not return JSON.
     }
@@ -59,6 +60,11 @@ const json = (body: unknown, method = "POST"): RequestInit => ({
 
 export const api = {
   getSystemInfo: () => request<SystemInfo>("/api/system/info"),
+  imageBlob: async (imageId: string) => {
+    const response = await fetch(apiUrl(`/api/images/${encodeURIComponent(imageId)}/file`), { cache: "no-store" });
+    if (!response.ok) throw new Error(`原图读取失败（HTTP ${response.status}），请确认图像和后端服务可用。`);
+    return response.blob();
+  },
   getSamSettings: () => request<SamSettings>("/api/settings/sam"),
   updateSamSettings: (payload: Omit<SamSettings, "model_configured">) => request<SamSettings>("/api/settings/sam", json(payload, "PUT")),
   getLlmSettings: () => request<LLMSettings>("/api/settings/llm"),
@@ -79,6 +85,8 @@ export const api = {
   listClasses: (datasetId: string) => request<ClassLabel[]>(`/api/datasets/${datasetId}/classes`),
   createClass: (datasetId: string, name: string, color = "#22c55e") =>
     request<ClassLabel>(`/api/datasets/${datasetId}/classes`, json({ name, color })),
+  deleteClass: (datasetId: string, classId: string) =>
+    request<void>(`/api/datasets/${encodeURIComponent(datasetId)}/classes/${encodeURIComponent(classId)}`, { method: "DELETE" }),
   listImages: async (datasetId: string) => {
     const pageSize = 500;
     const first = await request<ImagePage>(`/api/datasets/${datasetId}/images?offset=0&limit=${pageSize}`);
@@ -104,11 +112,11 @@ export const api = {
     request<{ total_found: number; imported: number; skipped: number; invalid: number }>(`/api/datasets/${datasetId}/images/scan`, json({ path, recursive: true, split })),
   getAnnotations: (datasetId: string, imageId: string) =>
     request<Annotation[]>(`/api/datasets/${datasetId}/images/${imageId}/annotations`),
-  replaceAnnotations: (datasetId: string, imageId: string, annotations: unknown[]) =>
+  replaceAnnotations: (datasetId: string, imageId: string, annotations: unknown[], expectedRevision?: number, regions?: { roi_mask_ref?: string | null; ignore_mask_ref?: string | null }) =>
     request<Annotation[]>(`/api/datasets/${datasetId}/images/${imageId}/annotations`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ annotations }),
+      body: JSON.stringify({ annotations, ...(expectedRevision === undefined ? {} : { expected_revision: expectedRevision }), ...regions }),
     }),
   samPredict: (payload: { image_id: string; class_id: string; prompt_type: "box" | "point"; box?: { x: number; y: number; width: number; height: number }; points?: { x: number; y: number; label?: 0 | 1 }[] }) =>
     request<SamPrediction>("/api/sam/predict", json(payload)),
@@ -146,7 +154,12 @@ export const api = {
     });
   },
   exportYoloUrl: (datasetId: string) => apiUrl(`/api/datasets/${datasetId}/export/yolo`),
-  exportCocoUrl: (datasetId: string) => apiUrl(`/api/datasets/${datasetId}/export/coco`),
+  exportCocoUrl: (datasetId: string, imageIds?: string[]) => {
+    const query = new URLSearchParams();
+    for (const imageId of imageIds ?? []) query.append("image_ids", imageId);
+    const suffix = query.toString();
+    return apiUrl(`/api/datasets/${encodeURIComponent(datasetId)}/export/coco${suffix ? `?${suffix}` : ""}`);
+  },
   importCoco: async (file: File, name: string, taskType: TaskType) => { const form = new FormData(); form.append("file", file); form.append("name", name); form.append("task_type", taskType); return request<{ dataset: Dataset; imported_images: number; imported_annotations: number }>("/api/datasets/import/coco", { method: "POST", body: form }); },
   tileDataset: (datasetId: string, data: { name: string; description?: string; tile_size: number; overlap: number; keep_empty_tiles: boolean }) => request<{ dataset_id: string; source_dataset_id: string; generated_images: number; generated_annotations: number; skipped_empty_tiles: number }>(`/api/datasets/${datasetId}/tile`, json(data)),
   listTrainingTasks: (datasetId?: string) =>
@@ -181,7 +194,7 @@ export const api = {
   deleteModel: (modelId: string) => request<void>(`/api/models/${modelId}`, { method: "DELETE" }),
   exportModelOnnx: (modelId: string) => request<ModelVersion>(`/api/models/${modelId}/export-onnx`, { method: "POST" }),
   testModel: async (modelId: string, file: File, confidence: number, iou: number) => { const form = new FormData(); form.append("file", file); return request<InferenceResult>(`/api/models/${modelId}/test?confidence=${confidence}&iou=${iou}`, { method: "POST", body: form }); },
-  createAutoAnnotation: (datasetId: string, payload: { model_id: string; confidence: number; iou: number; clean_old_annotations: boolean; skip_annotated_images: boolean; class_mapping?: Record<string, string> }) => request<AutoAnnotationTask>(`/api/datasets/${datasetId}/auto-annotation`, json(payload)),
+  createAutoAnnotation: (datasetId: string, payload: { model_id: string; confidence: number; iou: number; clean_old_annotations: boolean; skip_annotated_images: boolean; class_mapping?: Record<string, string | null> }) => request<AutoAnnotationTask>(`/api/datasets/${datasetId}/auto-annotation`, json(payload)),
   listAutoAnnotations: (datasetId: string) => request<AutoAnnotationTask[]>(`/api/datasets/${datasetId}/auto-annotation`),
   getAutoAnnotation: (taskId: string) => request<AutoAnnotationTask>(`/api/auto-annotation/${taskId}`),
   stopAutoAnnotation: (taskId: string) => request<AutoAnnotationTask>(`/api/auto-annotation/${taskId}/stop`, { method: "POST" }),

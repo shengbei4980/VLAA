@@ -14,7 +14,7 @@ class AutoAnnotationCreateRequest(BaseModel):
     iou: float = Field(default=0.45, ge=0, le=1)
     clean_old_annotations: bool = False
     skip_annotated_images: bool = True
-    class_mapping: dict[str, str] = Field(default_factory=dict, max_length=100)
+    class_mapping: dict[str, str | None] = Field(default_factory=dict, max_length=100)
 
 
 class AutoAnnotationTaskResponse(BaseModel):

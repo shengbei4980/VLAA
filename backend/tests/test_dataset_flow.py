@@ -5,6 +5,8 @@ import zipfile
 from dataclasses import replace
 
 import pytest
+
+from workflow_test_helpers import confirm_image
 from PIL import Image
 
 
@@ -97,6 +99,7 @@ def test_detect_dataset_annotation_validation_and_yolo_round_trip(client):
     assert image_response.status_code == 200
     assert image_response.headers["content-type"] == "image/png"
 
+    confirm_image(client, dataset_id, image["id"])
     exported = client.get(f"/api/datasets/{dataset_id}/export/yolo")
     assert exported.status_code == 200, exported.text
     with zipfile.ZipFile(io.BytesIO(exported.content)) as archive:
@@ -156,6 +159,7 @@ def test_coco_round_trip_and_derived_tiling_dataset(client):
         f"/api/datasets/{dataset_id}/images/{image['id']}/annotations",
         json={"annotations": [{"type": "bbox", "class_id": class_id, "bbox": {"x": 10, "y": 12, "width": 30, "height": 25}}]},
     )
+    confirm_image(client, dataset_id, image["id"])
     coco = client.get(f"/api/datasets/{dataset_id}/export/coco")
     assert coco.status_code == 200, coco.text
     with zipfile.ZipFile(io.BytesIO(coco.content)) as archive:
@@ -200,7 +204,7 @@ def test_coco_segment_import_rejects_bbox_only_annotations(client):
         files={"file": ("segment.zip", archive_payload.getvalue(), "application/zip")},
     )
     assert response.status_code == 422, response.text
-    assert response.json()["error"]["code"] == "coco_segment_missing_polygon"
+    assert response.json()["error"]["code"] == "coco_segment_missing_mask"
 
 
 def test_failed_coco_import_rolls_back_dataset_and_classes(client):
@@ -264,6 +268,7 @@ def test_obb_annotations_validate_and_round_trip_through_yolo(client):
     assert saved.status_code == 200, saved.text
     assert saved.json()[0]["obb"] == {"cx": 45.0, "cy": 35.0, "width": 30.0, "height": 20.0, "angle": 20.0}
 
+    confirm_image(client, dataset_id, image["id"])
     exported = client.get(f"/api/datasets/{dataset_id}/export/yolo")
     assert exported.status_code == 200, exported.text
     with zipfile.ZipFile(io.BytesIO(exported.content)) as archive:
@@ -382,6 +387,7 @@ def test_classification_uses_yolo_class_directories(client):
             json={"annotations": [{"type": "classify", "class_id": class_id}]},
         )
         assert response.status_code == 200, response.text
+        confirm_image(client, dataset_id, image["id"])
 
     exported = client.get(f"/api/datasets/{dataset_id}/export/yolo")
     assert exported.status_code == 200, exported.text

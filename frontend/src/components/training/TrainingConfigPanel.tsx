@@ -1,4 +1,4 @@
-import type { FormEvent } from "react";
+import { useState, type FormEvent } from "react";
 import type { Dataset, TaskType } from "../../types";
 import {
   BATCH_OPTIONS,
@@ -54,6 +54,7 @@ export function TrainingConfigPanel({
   const setForm = onFormChange;
   const modelChoices = modelChoicesFor(dataset.task_type);
   const modelInList = modelChoices.some((item) => item.value === form.model);
+  const [customModel, setCustomModel] = useState(false);
   const taskMeta = TASK_META[dataset.task_type];
 
   return (
@@ -168,9 +169,10 @@ export function TrainingConfigPanel({
             <label className="training-ws-field training-ws-field-wide">
               <span>基础权重</span>
               <select
-                value={modelInList ? form.model : "__custom__"}
+                value={modelInList && !customModel ? form.model : "__custom__"}
                 onChange={(event) => {
                   const value = event.target.value;
+                  setCustomModel(value === "__custom__");
                   if (value === "__custom__") return;
                   setForm((prev) => ({ ...prev, model: value }));
                 }}
@@ -178,13 +180,14 @@ export function TrainingConfigPanel({
                 {modelChoices.map((option) => (
                   <option key={option.value} value={option.value}>{option.label}</option>
                 ))}
-                {!modelInList && <option value="__custom__">{form.model}</option>}
+                <option value="__custom__">自定义受管权重或模型名</option>
               </select>
             </label>
-            {!modelInList && (
+            {(!modelInList || customModel) && (
               <label className="training-ws-field training-ws-field-wide">
                 <span>自定义权重名</span>
                 <input value={form.model} onChange={(event) => setForm((prev) => ({ ...prev, model: event.target.value }))} />
+                <small>填写模型名或受管 models 目录内的权重路径，任务类型须与数据集一致。</small>
               </label>
             )}
             <label className="training-ws-field">

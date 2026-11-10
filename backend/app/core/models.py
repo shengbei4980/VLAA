@@ -73,6 +73,13 @@ class ImageItem(Base, TimestampMixin):
     source_checksum: Mapped[str | None] = mapped_column(String(64), nullable=True)
     frame_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
     timestamp: Mapped[float | None] = mapped_column(Float, nullable=True)
+    annotation_revision: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    review_status: Mapped[str] = mapped_column(String(32), default="pending", server_default="pending", nullable=False)
+    review_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    review_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    roi_mask_ref: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    ignore_mask_ref: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    rules_json: Mapped[dict] = mapped_column(JSON, default=dict, server_default="{}", nullable=False)
 
     dataset: Mapped[Dataset] = relationship(back_populates="images")
     annotations: Mapped[list["Annotation"]] = relationship(back_populates="image", cascade="all, delete-orphan")
@@ -124,10 +131,47 @@ class Annotation(Base, TimestampMixin):
     polygon: Mapped[list[list[float]] | None] = mapped_column(JSON, nullable=True)
     obb: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     source: Mapped[str] = mapped_column(String(16), default="manual", nullable=False)
+    object_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    mask_ref: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    provenance_json: Mapped[dict] = mapped_column(JSON, default=dict, server_default="{}", nullable=False)
 
     dataset: Mapped[Dataset] = relationship(back_populates="annotations")
     image: Mapped[ImageItem] = relationship(back_populates="annotations")
     class_label: Mapped[ClassLabel] = relationship(back_populates="annotations")
+
+
+class AnnotationDraft(Base, TimestampMixin):
+    __tablename__ = "annotation_drafts"
+
+    image_id: Mapped[str] = mapped_column(ForeignKey("image_items.id", ondelete="CASCADE"), primary_key=True)
+    base_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    payload_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+
+
+class AnnotationReviewReceipt(Base, TimestampMixin):
+    __tablename__ = "annotation_review_receipts"
+    __table_args__ = (UniqueConstraint("image_id", "revision", "fingerprint", name="uq_review_image_revision_fingerprint"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    image_id: Mapped[str] = mapped_column(ForeignKey("image_items.id", ondelete="CASCADE"), index=True, nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    image_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    confirmed_empty: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    actor: Mapped[str] = mapped_column(String(128), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    decision_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+
+
+class DatasetSnapshot(Base, TimestampMixin):
+    __tablename__ = "dataset_snapshots"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    dataset_id: Mapped[str | None] = mapped_column(ForeignKey("datasets.id", ondelete="SET NULL"), index=True, nullable=True)
+    fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    manifest_path: Mapped[str] = mapped_column(Text, nullable=False)
+    summary_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
 
 
 class TrainingProfile(Base, TimestampMixin):
@@ -226,6 +270,7 @@ class ModelVersion(Base, TimestampMixin):
     format: Mapped[str] = mapped_column(String(16), default="pt", nullable=False)
     task_type: Mapped[str] = mapped_column(String(16), default="detect", nullable=False)
     engine_type: Mapped[str] = mapped_column(String(32), default="ultralytics", nullable=False)
+    class_schema_json: Mapped[list] = mapped_column(JSON, default=list, server_default="[]", nullable=False)
     model_path: Mapped[str] = mapped_column(Text, nullable=False)
     base_model: Mapped[str | None] = mapped_column(String(255), nullable=True)
     status: Mapped[str] = mapped_column(String(16), default="active", index=True, nullable=False)

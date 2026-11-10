@@ -37,3 +37,13 @@ class SamPredictResponse(BaseModel):
     score: float
     backend_used: str
     device: str | None = None
+
+
+class SamMaskPredictResponse(BaseModel):
+    image_id: str
+    class_id: str
+    mask_ref: str
+    polygon: list[tuple[float, float]] | None = None
+    score: float | None = None
+    backend_used: Literal["ultralytics_sam"] = "ultralytics_sam"
+    device: str | None = None

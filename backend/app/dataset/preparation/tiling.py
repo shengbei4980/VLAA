@@ -154,6 +154,9 @@ class DatasetTiler:
                             crop.close()
                         storage.write_image(derived.id, storage_name, output.getvalue())
                         target = ImageItem(id=image_id, dataset_id=derived.id, file_name=tile_name, storage_name=storage_name, width=tile.width, height=tile.height, split=image.split, status="annotated" if transformed else "unannotated")
+                        target.source_group_id = image.source_group_id or image.id
+                        target.source_file = image.file_name
+                        target.annotation_revision = 1
                         session.add(target)
                         for item in transformed:
                             session.add(Annotation(id=new_id("ann"), image_id=image_id, dataset_id=derived.id, class_id=item["class_id"], type=item["type"], x=item.get("x"), y=item.get("y"), width=item.get("width"), height=item.get("height"), polygon=item.get("polygon"), source="imported"))

@@ -64,6 +64,7 @@ def get_agent_service(request: Request) -> AgentService:
         training_service=training_service,
         model_service=model_service,
         session_factory=session_factory,
+        settings=settings,
     )
     return AgentService(
         session_factory,

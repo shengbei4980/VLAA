@@ -22,6 +22,8 @@ def infer_model_family(model: str) -> TaskType | None:
         return TaskType.OBB
     if "-cls." in name or "_cls." in name:
         return TaskType.CLASSIFY
+    if Path(model).is_absolute() or Path(model).parent != Path("."):
+        return None
     if name.endswith(".pt") or name.endswith(".yaml"):
         return TaskType.DETECT
     return None
@@ -36,8 +38,25 @@ def validate_model_family(task_type: TaskType, model: str) -> None:
         )
 
 
+def validate_local_model_task(task_type: TaskType, model_reference: str) -> None:
+    if not Path(model_reference).is_file():
+        return
+    from ultralytics import YOLO
+    from ultralytics.nn.tasks import guess_model_task
+
+    try:
+        model = YOLO(model_reference)
+        actual = guess_model_task(model.model)
+    except Exception as exc:
+        raise ValidationError("model_load_failed", "The selected managed weight could not be loaded as an Ultralytics model.") from exc
+    if actual != task_type.value:
+        raise ValidationError("model_task_mismatch", f"The selected weight supports {actual}; this task requires {task_type.value}.")
+
+
 def resolve_model_reference(model: str, storage: "Storage | None" = None) -> str:
     candidate = Path(model).expanduser()
+    if candidate.suffix.lower() not in {".pt", ".yaml"}:
+        raise ValidationError("unsupported_model_reference", "Training models must be a .pt or .yaml reference.")
     if candidate.is_absolute() or candidate.parent != Path("."):
         resolved = candidate.resolve()
         if not resolved.is_file():

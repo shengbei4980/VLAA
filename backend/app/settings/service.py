@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any
+import threading
+from functools import wraps
+from typing import Any, Callable
 
 import httpx
 
@@ -22,6 +24,17 @@ from app.settings.schemas import (
     SamSettingsResponse,
     SamSettingsUpdate,
 )
+
+
+SETTINGS_WRITE_LOCK = threading.RLock()
+
+
+def _serialized_update(method: Callable[..., Any]) -> Callable[..., Any]:
+    @wraps(method)
+    def update(*args, **kwargs):
+        with SETTINGS_WRITE_LOCK:
+            return method(*args, **kwargs)
+    return update
 
 
 class SettingsService:
@@ -58,6 +71,7 @@ class SettingsService:
             model_configured=bool(model),
         )
 
+    @_serialized_update
     def update_sam(self, payload: SamSettingsUpdate) -> SamSettingsResponse:
         device = payload.device.strip().lower()
         if not self._DEVICE.fullmatch(device):
@@ -128,6 +142,7 @@ class SettingsService:
             auth_header_name=auth_header_name,
         )
 
+    @_serialized_update
     def update_llm_settings(self, payload: LLMSettingsUpdate) -> LLMSettingsOut:
         current = self.get_llm_settings_internal()
         api_key = current.api_key if payload.api_key is None or payload.api_key == "" else payload.api_key

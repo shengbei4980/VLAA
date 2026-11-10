@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 from logging.handlers import RotatingFileHandler
 
 from app.core.errors import ValidationError
@@ -210,7 +211,7 @@ def test_runtime_logs_endpoint_returns_startup_log(client):
     response = client.get("/api/logs/runtime?lines=20")
     assert response.status_code == 200
     payload = response.json()
-    assert payload["path"].endswith("logs/backend.log")
+    assert Path(payload["path"]).parts[-2:] == ("logs", "backend.log")
     assert any("runtime initialized" in line for line in payload["lines"])
 
     filtered = client.get("/api/logs/runtime?lines=20&level=INFO")

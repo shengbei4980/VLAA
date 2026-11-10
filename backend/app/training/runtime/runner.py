@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.core.models import TrainingTask
 from app.core.time import utc_now
 from app.core.storage import Storage
-from app.core.local_compute import local_compute_gate
+from app.core.local_compute import local_compute_gate, release_local_models
 from app.training.artifacts.checkpoints import checkpoint_paths
 from app.training.observability.log_store import TrainingLogStore
 from app.training.observability.metrics import TrainingMetricsParser
@@ -49,6 +49,7 @@ class TrainingRunner:
             log_store = TrainingLogStore(task.logs_path or "train.log")
             log_store.append(f"Training task {task.id} is waiting for the local compute slot.")
             with local_compute_gate.acquire():
+                release_local_models()
                 if self._stop_requested(task_id):
                     self._finish(task_id, -1, log_store)
                     return
@@ -66,6 +67,7 @@ class TrainingRunner:
                         bufsize=1,
                         shell=False,
                         start_new_session=os.name == "posix",
+                        env={**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [str(Path(__file__).resolve().parents[3]), os.getenv("PYTHONPATH")]))},
                     )
                     process_registry.register(task_id, process)
                     if self._stop_requested(task_id):

@@ -23,3 +23,19 @@ runs/
 *.pt
 *.onnx
 *.engine
+.ywa-storage.json
+.ywa-storage-plans/
+*.storage.tmp
+
+# Machine settings, private planning notes and release output
+Ultralytics/
+docs/plans/
+docs/assets/yolowebagentstarter-hero-with-flow.png
+release/
+dist/
+.env.*
+!.env.example
+*.log
+*.sqlite
+*.sqlite3
+*.db

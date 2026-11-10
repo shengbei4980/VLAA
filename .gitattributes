@@ -1,0 +1,2 @@
+# Keep Windows launcher bytes intact in source ZIPs downloaded from GitHub.
+*.cmd -text whitespace=cr-at-eol

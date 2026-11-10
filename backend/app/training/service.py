@@ -42,8 +42,9 @@ class TrainingService:
         self.queue = queue
         self.queue.configure(session_factory, storage)
 
-    def create_task(self, session: Session, payload: TrainingTaskCreate, *, task_id: str | None = None) -> TrainingTaskResponse:
-        return self._create_task(session, payload, task_id=task_id)
+    def create_task(self, session: Session, payload: TrainingTaskCreate, *, task_id: str | None = None,
+                    snapshot_id: str | None = None) -> TrainingTaskResponse:
+        return self._create_task(session, payload, task_id=task_id, snapshot_id=snapshot_id)
 
     def devices(self) -> list[dict[str, object]]:
         return [device.as_dict() for device in DeviceService().list_devices()]
@@ -81,6 +82,7 @@ class TrainingService:
             resume_run_dir=source_run_dir if payload.resume_epoch else None,
             resume_epoch=payload.resume_epoch,
             resume_source_task_id=previous.id,
+            snapshot_id=(previous.config_json or {}).get("snapshot_id"),
         )
 
     def _create_task(
@@ -93,7 +95,14 @@ class TrainingService:
         resume_run_dir: Path | None = None,
         resume_epoch: bool = False,
         resume_source_task_id: str | None = None,
+        snapshot_id: str | None = None,
     ) -> TrainingTaskResponse:
+        if task_id:
+            existing = session.get(TrainingTask, task_id)
+            if existing is not None:
+                if existing.dataset_id != payload.dataset_id:
+                    raise ConflictError("training_task_scope_conflict", "This task ID belongs to another dataset.")
+                return task_response(existing)
         payload.device = DeviceService().normalize_selector(payload.device)
         dataset = get_dataset(session, payload.dataset_id)
         task_type = payload.task_type or TaskType(dataset.task_type)
@@ -101,20 +110,31 @@ class TrainingService:
             raise ValidationError("task_type_mismatch", "Training task type must match the dataset task type.")
         validate_model_family(task_type, payload.model)
         model_reference = resolve_model_reference(payload.model, self.storage)
-        self._validate_dataset_ready(session, dataset)
+        if resume_checkpoint is None:
+            from app.training.config import validate_local_model_task
 
-        if task_id:
-            existing = session.get(TrainingTask, task_id)
-            if existing is not None:
-                return task_response(existing)
+            validate_local_model_task(task_type, model_reference)
+        from app.dataset.snapshots import create_snapshot, get_snapshot
+        from app.dataset.exchange.snapshot import export_snapshot_directory
+
         resolved_task_id = task_id or new_id("train")
+        if snapshot_id is None:
+            self._validate_dataset_ready(session, dataset)
+            image_ids = list(session.scalars(select(ImageItem.id).where(
+                ImageItem.dataset_id == dataset.id, ImageItem.split.in_(["train", "val"]))))
+            snapshot = create_snapshot(session, self.storage, dataset.id, image_ids=image_ids,
+                                       snapshot_id=f"snapshot_{resolved_task_id}")
+        else:
+            snapshot = get_snapshot(session, self.storage, snapshot_id)
+            if snapshot["manifest"]["dataset_id"] != dataset.id or snapshot["manifest"]["task_type"] != task_type.value:
+                raise ValidationError("training_snapshot_mismatch", "Training requires a matching confirmed dataset snapshot.")
         task_root = self.storage.training_task_dir(resolved_task_id)
         export_root = task_root / "dataset"
         run_dir = resume_run_dir if resume_run_dir is not None else task_root / "run"
         try:
             if resume_checkpoint is not None:
                 model_reference = str(resume_checkpoint)
-            export = export_dataset_directory(session, self.storage, dataset.id, export_root)
+            export = export_snapshot_directory(snapshot, self.storage, export_root)
             self._validate_export_training_splits(export, dataset.task_type)
             data_yaml = str(export["data_yaml"])
             export_stats = {
@@ -143,6 +163,11 @@ class TrainingService:
                 patience=payload.patience,
                 resume=resume_epoch,
             )
+            if export["mask_aware"]:
+                import sys
+
+                command.args[:] = [sys.executable, "-m", "app.training.maskaware", *command.args[1:]]
+                command = type(command)(args=command.args, readable=" ".join(command.args))
             task = TrainingTask(
                 id=resolved_task_id,
                 dataset_id=dataset.id,
@@ -163,6 +188,13 @@ class TrainingService:
                 patience=payload.patience,
                 config_json={
                     **payload.model_dump(),
+                    "snapshot_id": snapshot["id"],
+                    "mask_aware": export["mask_aware"],
+                    "class_schema": snapshot["manifest"]["classes"],
+                    **({"mask_adapter": "ultralytics-v8-v11-canonical-v1",
+                        "supervision_policy": {"object_masks": "canonical_full_resolution", "valid_pixels": "roi_minus_ignore",
+                                               "prototype_boundary": "exclude_cells_touching_invalid_pixels"}}
+                       if export["mask_aware"] else {}),
                     **({"resume_source_task_id": resume_source_task_id, "resume_epoch": resume_epoch} if resume_source_task_id else {}),
                 },
                 command_args_json=command.args,
@@ -323,7 +355,7 @@ class TrainingService:
 
     @staticmethod
     def _validate_export_training_splits(export: dict[str, object], task_type: str) -> None:
-        annotated_image_counts = dict(export.get("annotated_image_counts") or {})
+        annotated_image_counts = dict(export.get("confirmed_image_counts") or export.get("annotated_image_counts") or {})
         missing = [split for split in ("train", "val") if not annotated_image_counts.get(split)]
         if missing:
             if task_type == TaskType.CLASSIFY:

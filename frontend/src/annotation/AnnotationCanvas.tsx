@@ -12,6 +12,10 @@ export type AnnotationDraft = {
   polygon?: [number, number][];
   obb?: OBB;
   source: "manual" | "imported" | "sam" | "auto";
+  mask_ref?: string;
+  mask?: import("../types/workflows").MaskRle;
+  object_id?: string;
+  provenance_json?: Record<string, unknown>;
 };
 
 interface Props {
@@ -27,6 +31,7 @@ interface Props {
   onSamPoints?: (points: [number, number][]) => Promise<void>;
   samBusy?: boolean;
   samCapabilities?: SamCapabilities;
+  focusRegion?: BBox;
 }
 
 const MAX_WIDTH = 900;
@@ -36,7 +41,7 @@ type DrawingTool = "bbox" | "polygon" | "obb" | "sam" | "sam_point";
 
 const taskTool = (taskType: TaskType): DrawingTool => ({ detect: "bbox", segment: "polygon", obb: "obb", classify: "bbox" } satisfies Record<TaskType, DrawingTool>)[taskType];
 
-export function AnnotationCanvas({ image, classes, annotations, activeClassId, selectedAnnotationId, onSelectAnnotation, taskType, onChange, onSamBox, onSamPoints, samBusy = false, samCapabilities }: Props) {
+export function AnnotationCanvas({ image, classes, annotations, activeClassId, selectedAnnotationId, onSelectAnnotation, taskType, onChange, onSamBox, onSamPoints, samBusy = false, samCapabilities, focusRegion }: Props) {
   const [imageElement, setImageElement] = useState<HTMLImageElement>();
   const [tool, setTool] = useState<DrawingTool>(() => taskTool(taskType));
   const [dragStart, setDragStart] = useState<[number, number]>();
@@ -219,6 +224,7 @@ export function AnnotationCanvas({ image, classes, annotations, activeClassId, s
           >
             <Layer>
               <KonvaImage image={imageElement} width={displaySize.width} height={displaySize.height} listening={false} />
+              {focusRegion && <Rect x={focusRegion.x * scale.x} y={focusRegion.y * scale.y} width={focusRegion.width * scale.x} height={focusRegion.height * scale.y} stroke="#f59e0b" strokeWidth={3} dash={[6, 4]} listening={false} />}
               {annotations.map((annotation) => annotation.type === "obb" && annotation.obb ? <EditableObb key={annotation.id} annotation={annotation} stageObb={toStageObb(annotation.obb)} selected={annotation.id === effectiveSelectedAnnotationId} setNodeRef={(node) => { obbRefs.current[annotation.id] = node; }} onSelect={() => { setSelectedObbId(annotation.id); setSelectedBboxId(undefined); onSelectAnnotation?.(annotation.id); }} onChange={(updated) => replaceObb(annotation.id, updated)} /> : annotation.type === "bbox" && annotation.bbox ? <EditableBbox key={annotation.id} annotation={annotation} scale={scale} selected={annotation.id === effectiveSelectedAnnotationId} setNodeRef={(node) => { bboxRefs.current[annotation.id] = node; }} onSelect={() => { setSelectedBboxId(annotation.id); setSelectedObbId(undefined); onSelectAnnotation?.(annotation.id); }} onChange={(updated) => replaceBbox(annotation.id, updated)} /> : <AnnotationShape key={annotation.id} annotation={annotation} scale={scale} onSelect={() => onSelectAnnotation?.(annotation.id)} />)}
               {dragStart && dragEnd && tool !== "obb" && <Rect {...displayBox(normalizeBBox(dragStart, dragEnd))} stroke="#f97316" dash={[6, 4]} />}
               {draftObb && <Rect x={draftObb.x + draftObb.width / 2} y={draftObb.y + draftObb.height / 2} width={draftObb.width} height={draftObb.height} offsetX={draftObb.width / 2} offsetY={draftObb.height / 2} rotation={angle} stroke="#f97316" dash={[6, 4]} />}
@@ -253,7 +259,7 @@ function displayBox(box: BBox) {
 }
 
 function toDraft(annotation: Annotation): AnnotationDraft {
-  return { id: annotation.id, class_id: annotation.class_id, type: annotation.type, bbox: annotation.bbox ?? undefined, polygon: annotation.polygon ?? undefined, obb: annotation.obb ?? undefined, source: annotation.source };
+  return { id: annotation.id, class_id: annotation.class_id, type: annotation.type, bbox: annotation.bbox ?? undefined, polygon: annotation.polygon ?? undefined, obb: annotation.obb ?? undefined, source: annotation.source, ...(annotation.mask_ref ? { mask_ref: annotation.mask_ref } : {}), ...(annotation.object_id ? { object_id: annotation.object_id } : {}), ...(annotation.provenance_json ? { provenance_json: annotation.provenance_json } : {}) };
 }
 
 function AnnotationShape({ annotation, scale, onSelect }: { annotation: Annotation; scale: { x: number; y: number }; onSelect: () => void }) {

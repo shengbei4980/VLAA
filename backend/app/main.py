@@ -18,6 +18,12 @@ from app.auto_annotation.queue import auto_annotation_queue
 from app.video_import.queue import video_import_queue
 from app.agent.service import AgentService
 from app.agent.runtime import AgentRunExecutor
+from app.workflow.service import WorkflowService
+from app.workflow.bridges import WorkflowBindings
+from app.workflow.runtime import WorkflowExecutor
+from app.vision.workflow import build_vision_handlers
+from app.storage_settings.middleware import StorageWriteGuard
+from app.sam.configuration import freeze_sam_configuration
 
 
 def create_app(settings: Settings | None = None, *, run_migrations: bool = True) -> FastAPI:
@@ -43,19 +49,26 @@ def create_app(settings: Settings | None = None, *, run_migrations: bool = True)
         video_import_queue.recover_orphaned()
         AgentService(database.session_factory, resolved).recover_orphaned()
         app.state.agent_executor = AgentRunExecutor()
+        app.state.workflow_service = WorkflowService(database.session_factory, storage, WorkflowBindings(
+            handlers=build_vision_handlers(storage, resolved, database.session_factory),
+            sam_resolver=lambda: freeze_sam_configuration(resolved)), project_root=resolved.project_root)
+        app.state.workflow_executor = WorkflowExecutor(app.state.workflow_service)
+        app.state.workflow_executor.start()
         import logging
 
-        logging.getLogger("ywa").info("YoloWebAgentStarter runtime initialized")
+        logging.getLogger("ywa").info("Vision-Language Automated Annotation (VLAA) runtime initialized")
         try:
             yield
         finally:
+            app.state.workflow_executor.shutdown()
             app.state.agent_executor.shutdown()
             database.dispose()
 
-    app = FastAPI(title="YoloWebAgentStarter API", version="0.1.0-dev", lifespan=lifespan)
+    app = FastAPI(title="Vision-Language Automated Annotation API", version="0.2.0", lifespan=lifespan)
     app.state.settings = resolved
     app.state.database = database
     app.state.storage = storage
+    app.add_middleware(StorageWriteGuard, settings=resolved)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(resolved.cors_origins),

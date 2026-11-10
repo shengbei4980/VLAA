@@ -13,6 +13,7 @@ export function saveLocale(locale: AppLocale): void {
 
 export const localeText = {
   zh: {
+    brandTagline: "视觉大模型自动标注",
     datasets: "数据集",
     training: "训练",
     models: "模型",
@@ -28,10 +29,11 @@ export const localeText = {
     backToDatasets: "返回数据集",
     mainNav: "主导航",
     currentDataset: "当前数据集：",
-    sidebarNoteTitle: "本地 YOLO 工作台",
-    sidebarNoteBody: "数据和模型仅保存在此设备。",
+    sidebarNoteTitle: "视觉大模型自动标注",
+    sidebarNoteBody: "LLM 标注与检查，衔接人工复核、训练和评估。",
   },
   en: {
+    brandTagline: "Vision-language model annotation",
     datasets: "Datasets",
     training: "Training",
     models: "Models",
@@ -47,7 +49,7 @@ export const localeText = {
     backToDatasets: "Back to datasets",
     mainNav: "Main navigation",
     currentDataset: "Current dataset: ",
-    sidebarNoteTitle: "Local YOLO workspace",
-    sidebarNoteBody: "Data and models stay on this device.",
+    sidebarNoteTitle: "Visual LLM annotation",
+    sidebarNoteBody: "LLM annotation and checks, followed by review, training and evaluation.",
   },
 } as const;

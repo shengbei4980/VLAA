@@ -7,6 +7,8 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image
+
+from workflow_test_helpers import confirm_image
 import torch
 
 from app.core.models import ModelVersion
@@ -265,6 +267,7 @@ def test_evaluation_creation_exports_segment_for_native_yolo_val(client, tmp_pat
         json={"annotations": [{"type": "polygon", "class_id": label["id"], "polygon": [[5, 5], [40, 5], [40, 30], [5, 30]]}]},
     )
     assert saved.status_code == 200
+    confirm_image(client, dataset["id"], uploaded["id"])
     model_path = tmp_path / "model.pt"
     model_path.write_bytes(b"fake")
     with client.app.state.database.session_factory() as session:
@@ -276,7 +279,11 @@ def test_evaluation_creation_exports_segment_for_native_yolo_val(client, tmp_pat
     assert response.status_code == 201, response.text
     payload = response.json()
     assert payload["data_path"].endswith("data.yaml")
-    assert Path(payload["export_path"], "labels", "val").is_dir()
+    assert Path(payload["export_path"], "data.yaml").is_file()
+    with client.app.state.database.session_factory() as session:
+        record = session.get(ModelEvaluationRecord, payload["id"])
+        assert record is not None
+        assert "workflow_manifest" in Path(payload["data_path"]).read_text(encoding="utf-8")
 
 
 def test_evaluation_rejects_split_with_only_unannotated_images(client, tmp_path):
@@ -301,7 +308,7 @@ def test_evaluation_rejects_split_with_only_unannotated_images(client, tmp_path)
     response = client.post("/api/models/model-empty-val/evaluate", json={"split": "val"})
 
     assert response.status_code == 422
-    assert response.json()["error"]["code"] == "evaluation_split_empty"
+    assert response.json()["error"]["code"] == "annotation_review_required"
 
 
 def test_evaluation_logs_and_artifacts_are_served_from_managed_storage(client, tmp_path):

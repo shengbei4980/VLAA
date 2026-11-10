@@ -113,6 +113,7 @@ def scan_images(
 
 def update_image_split(session: Session, image_id: str, split: SplitName) -> ImageItem:
     image = get_image(session, image_id)
+    _validate_group_split(session, [image], split)
     image.split = split
     session.commit()
     session.refresh(image)
@@ -131,6 +132,7 @@ def update_image_splits(session: Session, dataset_id: str, payload: BulkImageSpl
     images = list(session.scalars(select(ImageItem).where(ImageItem.dataset_id == dataset_id, ImageItem.id.in_(ids))))
     if len(images) != len(ids):
         raise NotFoundError("image_not_found", "One or more images were not found in this dataset.")
+    _validate_group_split(session, images, payload.split)
     for image in images:
         image.split = payload.split
     session.commit()
@@ -141,17 +143,33 @@ def auto_split_images(session: Session, dataset_id: str, payload: AutoSplitReque
     """Adapt upstream DatasetSplitProcessor's deterministic target-balancing for Starter's flat image model."""
     get_dataset(session, dataset_id)
     images = list(session.scalars(select(ImageItem).where(ImageItem.dataset_id == dataset_id).order_by(ImageItem.id)))
-    random.Random(payload.seed).shuffle(images)
+    groups: dict[str, list[ImageItem]] = {}
+    for image in images:
+        groups.setdefault(image.source_group_id or image.id, []).append(image)
+    grouped = list(groups.values())
+    random.Random(payload.seed).shuffle(grouped)
     ratios = {"train": payload.train_ratio, "val": payload.val_ratio, "test": payload.test_ratio}
     targets = {split: ratio * len(images) for split, ratio in ratios.items()}
     counts = {split: 0 for split in ratios}
-    for image in images:
+    for group in grouped:
         candidates = [split for split, ratio in ratios.items() if ratio > 0] or ["train"]
         split = min(candidates, key=lambda name: (counts[name] / max(targets[name], 1), ("train", "val", "test").index(name)))
-        image.split = split
-        counts[split] += 1
+        for image in group:
+            image.split = split
+        counts[split] += len(group)
     session.commit()
     return SplitOperationResponse(updated=len(images), split_counts=split_counts(session, dataset_id))
+
+
+def _validate_group_split(session: Session, images: list[ImageItem], split: SplitName) -> None:
+    selected = {image.id for image in images}
+    group_ids = {image.source_group_id for image in images if image.source_group_id}
+    if not group_ids:
+        return
+    peers = session.scalars(select(ImageItem).where(
+        ImageItem.dataset_id == images[0].dataset_id, ImageItem.source_group_id.in_(group_ids)))
+    if any(peer.id not in selected and peer.split != split for peer in peers):
+        raise ValidationError("source_group_split_leak", "Move the entire source group together to preserve independent splits.")
 
 
 def delete_image(session: Session, storage: Storage, image_id: str) -> None:

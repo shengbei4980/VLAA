@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.errors import NotFoundError, ValidationError
 from app.core.ids import new_id
-from app.core.models import Annotation, AutoAnnotationTask, ClassLabel, ImageItem, ModelVersion
+from app.core.models import Annotation, AnnotationDraft, AutoAnnotationTask, ClassLabel, ImageItem, ModelVersion
 from app.core.storage import Storage
 from app.core.task_types import annotation_type_for
 from app.core.time import utc_now
@@ -64,6 +64,9 @@ class AutoAnnotationService:
                 select(ClassLabel).where(ClassLabel.dataset_id == model.dataset_id).order_by(ClassLabel.class_index)
             )
         ) if model.dataset_id else []
+        if model.class_schema_json:
+            source_classes = [ClassLabel(id=item["id"], name=item["name"], class_index=item["index"], dataset_id=model.dataset_id)
+                              for item in model.class_schema_json]
         mapping = self._resolve_mapping(payload.class_mapping, target_classes, source_classes)
         if task_id:
             existing = session.get(AutoAnnotationTask, task_id)
@@ -129,7 +132,7 @@ class AutoAnnotationService:
 
     @staticmethod
     def _resolve_mapping(
-        requested: dict[str, str],
+        requested: dict[str, str | None],
         target_classes: list[ClassLabel],
         source_classes: list[ClassLabel],
     ) -> dict[str, str]:
@@ -145,11 +148,14 @@ class AutoAnnotationService:
                 source_index = int(raw_index)
             except (TypeError, ValueError) as exc:
                 raise ValidationError("invalid_class_mapping", "Model class indexes must be integers.") from exc
-            if source_index < 0 or target_id not in target_by_id:
+            if source_index < 0 or target_id is not None and target_id not in target_by_id:
                 raise ValidationError("invalid_class_mapping", "Class mapping must point to an existing dataset class.")
             if source_classes and source_index not in {item.class_index for item in source_classes}:
                 raise ValidationError("invalid_class_mapping", "Class mapping refers to a class not provided by the selected model.")
-            mapping[str(source_index)] = target_id
+            if target_id is None:
+                mapping.pop(str(source_index), None)
+            else:
+                mapping[str(source_index)] = target_id
         if not mapping:
             raise ValidationError("class_mapping_empty", "No model classes can be mapped to this dataset.")
         return mapping
@@ -161,15 +167,10 @@ def save_auto_annotations(
     image: ImageItem,
     detections: list[Detection],
 ) -> tuple[int, int, bool]:
-    """Persist model output as editable auto annotations, preserving human labels by default."""
+    """Stage model output for human review without modifying confirmed labels."""
 
     if task.skip_annotated_images and session.scalar(select(Annotation.id).where(Annotation.image_id == image.id).limit(1)) is not None:
         return 0, 0, True
-    if task.clean_old_annotations:
-        session.execute(delete(Annotation).where(Annotation.image_id == image.id))
-    else:
-        session.execute(delete(Annotation).where(Annotation.image_id == image.id, Annotation.source == "auto"))
-
     created: list[Annotation] = []
     skipped = 0
     expected_type = annotation_type_for(task.task_type)
@@ -183,10 +184,22 @@ def save_auto_annotations(
             skipped += 1
             continue
         created.append(annotation)
-    session.add_all(created)
-    session.flush()
-    annotation_count = session.scalar(select(func.count()).select_from(Annotation).where(Annotation.image_id == image.id)) or 0
-    image.status = "annotated" if annotation_count else "unannotated"
+    from app.dataset.annotation.review import annotation_payload
+
+    kept = [] if task.clean_old_annotations else [item for item in annotation_payload(session, image.id) if item["source"] != "auto"]
+    for item in created:
+        kept.append({"type": item.type, "class_id": item.class_id,
+                     "bbox": {"x": item.x, "y": item.y, "width": item.width, "height": item.height} if item.type == "bbox" else None,
+                     "polygon": item.polygon, "obb": item.obb, "source": "auto", "object_id": item.id,
+                     "provenance_json": {"auto_annotation_task_id": task.id, "model_id": task.model_id}})
+    draft = session.get(AnnotationDraft, image.id)
+    if draft is None:
+        draft = AnnotationDraft(image_id=image.id, base_revision=image.annotation_revision, revision=1)
+        session.add(draft)
+    else:
+        draft.revision += 1
+        draft.base_revision = image.annotation_revision
+    draft.payload_json = {"annotations": kept, "source_task_id": task.id, "requires_full_image_review": True}
     session.commit()
     return len(created), skipped, False
 
