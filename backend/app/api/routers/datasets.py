@@ -40,6 +40,7 @@ from app.core.schemas import (
 from app.core.storage import Storage
 from app.core.task_types import TaskType
 from app.dataset.annotation.service import list_annotations, replace_annotations
+from app.dataset.annotation.progress import WORKFLOW_FIELDS, dataset_progress, image_progress
 from app.dataset.exchange.yolo import YoloArchiveLimits, export_dataset, import_dataset
 from app.dataset.exchange.coco import export_coco, import_coco
 from app.dataset.quality.schemas import DatasetQualityReport
@@ -98,14 +99,16 @@ def _dataset_responses(session: Session, datasets: list[Dataset]) -> list[Datase
             .group_by(Annotation.dataset_id)
         ).all()
     )
-    return [_dataset_response(dataset, annotated_image_count=annotated.get(dataset.id, 0)) for dataset in datasets]
+    progress = dataset_progress(session, ids)
+    return [_dataset_response(dataset, annotated_image_count=annotated.get(dataset.id, 0)).model_copy(
+        update=progress[dataset.id]) for dataset in datasets]
 
 
 def _class_response(item: ClassLabel) -> ClassLabelResponse:
     return ClassLabelResponse.model_validate(item)
 
 
-def _image_response(item: ImageItem) -> ImageItemResponse:
+def _image_response(item: ImageItem, progress: dict | None = None) -> ImageItemResponse:
     return ImageItemResponse(
         id=item.id,
         dataset_id=item.dataset_id,
@@ -116,6 +119,7 @@ def _image_response(item: ImageItem) -> ImageItemResponse:
         status=item.status,
         annotation_revision=item.annotation_revision,
         review_status=item.review_status,
+        **{key: progress[key] for key in WORKFLOW_FIELDS if progress and key in progress},
         roi_mask_ref=item.roi_mask_ref,
         ignore_mask_ref=item.ignore_mask_ref,
         source_type=item.source_type,
@@ -220,7 +224,7 @@ def get_dataset_detail(dataset_id: str, session: Session = Depends(get_session))
 
 @router.patch("/{dataset_id}", response_model=DatasetResponse)
 def patch_dataset(dataset_id: str, payload: DatasetUpdate, session: Session = Depends(get_session)) -> DatasetResponse:
-    return _dataset_response(update_dataset(session, dataset_id, payload))
+    return _dataset_responses(session, [update_dataset(session, dataset_id, payload)])[0]
 
 
 @router.delete("/{dataset_id}", status_code=204, response_class=Response, response_model=None)
@@ -251,7 +255,9 @@ def get_images(
     session: Session = Depends(get_session),
 ) -> ImagePage:
     items = list_images(session, dataset_id)
-    return ImagePage(items=[_image_response(item) for item in items[offset : offset + limit]], total=len(items))
+    page = items[offset : offset + limit]
+    progress = image_progress(session, page)
+    return ImagePage(items=[_image_response(item, progress[item.id]) for item in page], total=len(items))
 
 
 @router.post("/{dataset_id}/images/upload", response_model=UploadImagesResponse, status_code=201)

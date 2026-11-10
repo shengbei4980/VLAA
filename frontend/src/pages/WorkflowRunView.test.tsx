@@ -14,14 +14,32 @@ vi.mock("../api/workflows", () => ({
   },
 }));
 vi.mock("./ArtifactReviewView", () => ({
-  ArtifactReviewView: ({ reviewId }: { reviewId: string }) => (
-    <p>复核 {reviewId}</p>
+  ArtifactReviewView: ({ reviewId, onSaved }: { reviewId: string; onSaved: () => void }) => (
+    <p>复核 {reviewId}<button onClick={onSaved}>保存并同步</button></p>
   ),
 }));
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true;
 describe("batch review barrier", () => {
+  it("opens a dataset-linked review and notifies the dataset when it is saved", async () => {
+    vi.clearAllMocks();
+    vi.mocked(workflowApi.run).mockResolvedValue({
+      id: "run-linked", status: "awaiting_review", profile_snapshot: {},
+      template_snapshot: { name: "visual", nodes: [] }, context: {},
+      items: [], attempts: [], artifacts: [], reviews: [], events: [], batch_counts: {},
+    } as unknown as WorkflowRun);
+    const changed = vi.fn();
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    await act(async () => root.render(<WorkflowRunView runId="run-linked" initialReviewId="review-linked" onDataChanged={changed} onBack={vi.fn()} onOpenTraining={vi.fn()} onOpenModel={vi.fn()} />));
+    expect(container.textContent).toContain("复核 review-linked");
+    expect(window.location.hash).toBe("#workflow/run-linked/review/review-linked");
+    await act(async () => container.querySelector<HTMLButtonElement>("button")!.click());
+    expect(changed).toHaveBeenCalledTimes(1);
+    expect(workflowApi.run).toHaveBeenCalledTimes(2);
+    act(() => root.unmount());
+  });
   it("uses the latest attempt for each image and batch while keeping old failures in collapsed history", async () => {
     vi.clearAllMocks();
     const message =
@@ -273,7 +291,7 @@ describe("batch review barrier", () => {
       nextAction.querySelector<HTMLButtonElement>("button.primary")!;
     expect(openReview.textContent).toBe("打开图像复核");
     act(() => openReview.click());
-    expect(container.textContent).toBe("复核 review-two");
+    expect(container.textContent).toContain("复核 review-two");
     expect(workflowApi.controlRun).not.toHaveBeenCalled();
     act(() => root.unmount());
     container.remove();

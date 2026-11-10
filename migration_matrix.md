@@ -100,6 +100,7 @@ This is a file-by-file distribution inventory, not proof of authorization or a r
 | `backend/app/dataset/annotation/__init__.py` | Inherited |
 | `backend/app/dataset/annotation/geometry.py` | Inherited |
 | `backend/app/dataset/annotation/masks.py` | New |
+| `backend/app/dataset/annotation/progress.py` | New |
 | `backend/app/dataset/annotation/review.py` | New |
 | `backend/app/dataset/annotation/review_router.py` | New |
 | `backend/app/dataset/annotation/service.py` | Modified |
@@ -223,6 +224,7 @@ This is a file-by-file distribution inventory, not proof of authorization or a r
 | `backend/tests/test_auto_annotation.py` | Modified |
 | `backend/tests/test_dataset_class_delete.py` | New |
 | `backend/tests/test_dataset_flow.py` | Modified |
+| `backend/tests/test_dataset_workflow_progress.py` | New |
 | `backend/tests/test_demo_review_gate.py` | New |
 | `backend/tests/test_geometry.py` | Inherited |
 | `backend/tests/test_labelme.py` | New |
@@ -249,6 +251,7 @@ This is a file-by-file distribution inventory, not proof of authorization or a r
 | `backend/tests/test_vision_task_instructions.py` | New |
 | `backend/tests/test_workflow.py` | New |
 | `backend/tests/test_workflow_batch_exports.py` | New |
+| `backend/tests/test_workflow_dataset_training_sync.py` | New |
 | `backend/tests/test_workflow_exports.py` | New |
 | `backend/tests/test_workflow_labelme_export.py` | New |
 | `backend/tests/test_workflow_previews.py` | New |
@@ -271,6 +274,7 @@ This is a file-by-file distribution inventory, not proof of authorization or a r
 | `frontend/src/App.dataset-upload.test.tsx` | Inherited |
 | `frontend/src/App.sam-race.test.tsx` | New |
 | `frontend/src/App.tsx` | Modified |
+| `frontend/src/App.workflow-sync.test.tsx` | New |
 | `frontend/src/agent/AgentContextPicker.test.tsx` | Inherited |
 | `frontend/src/agent/AgentContextPicker.tsx` | Inherited |
 | `frontend/src/agent/ReportText.test.tsx` | Inherited |
@@ -302,6 +306,8 @@ This is a file-by-file distribution inventory, not proof of authorization or a r
 | `frontend/src/components/AnnotationReviewPanel.tsx` | New |
 | `frontend/src/components/AutoAnnotationModal.test.tsx` | New |
 | `frontend/src/components/AutoAnnotationModal.tsx` | Modified |
+| `frontend/src/components/DatasetAnnotationSummary.test.tsx` | New |
+| `frontend/src/components/DatasetAnnotationSummary.tsx` | New |
 | `frontend/src/components/DatasetReviewStatusPanel.tsx` | New |
 | `frontend/src/components/ExportLocationsPanel.test.tsx` | New |
 | `frontend/src/components/ExportLocationsPanel.tsx` | New |

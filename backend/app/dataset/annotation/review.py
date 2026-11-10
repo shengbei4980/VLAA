@@ -176,25 +176,37 @@ def require_confirmed(session: Session, storage: Storage, dataset_id: str, image
     if not images or image_ids is not None and len(images) != len(image_ids):
         raise ValidationError("snapshot_range_invalid", "The selected range contains missing images or belongs to another dataset.")
     details = [review_detail(session, storage, image.id) for image in images]
-    pending = [item["image_id"] for item in details if item["receipt"] is None]
+    from app.dataset.annotation.progress import image_progress
+
+    progress = image_progress(session, images)
+    pending = [item["image_id"] for item in details if item["receipt"] is None or progress[item["image_id"]]["has_draft"]
+               or progress[item["image_id"]]["workflow_pending"]]
     if pending:
         raise ValidationError("annotation_review_required", "All selected images require current human confirmation.",
-                              details={"image_ids": pending, "confirmed": len(details) - len(pending), "total": len(details)})
+                              details={"image_ids": pending, "confirmed": len(details) - len(pending), "total": len(details),
+                                       "workflow_image_ids": [image.id for image in images if progress[image.id]["workflow_pending"]],
+                                       "draft_image_ids": [image.id for image in images if progress[image.id]["has_draft"]]})
     return details
 
 
 def review_summary(session: Session, storage: Storage, dataset_id: str) -> dict:
     get_dataset(session, dataset_id)
+    from app.dataset.annotation.progress import WORKFLOW_FIELDS, image_progress, progress_summary
+
+    images = list(session.scalars(select(ImageItem).where(ImageItem.dataset_id == dataset_id).order_by(ImageItem.id)))
+    progress = image_progress(session, images)
     items = []
-    for image in session.scalars(select(ImageItem).where(ImageItem.dataset_id == dataset_id).order_by(ImageItem.id)):
+    for image in images:
         detail = review_detail(session, storage, image.id)
-        items.append({"image_id": image.id, "revision": image.annotation_revision,
+        items.append({"image_id": image.id, "file_name": image.file_name, "revision": image.annotation_revision,
                       "fingerprint": detail["fingerprint"], "review_status": detail["review_status"],
                       "annotation_count": len(detail["annotations"]),
                       "contains_auto": any(item["source"] == "auto" for item in detail["annotations"]),
-                      "has_draft": detail["draft"] is not None})
+                      "has_draft": progress[image.id]["has_draft"],
+                      **{key: progress[image.id][key] for key in WORKFLOW_FIELDS}})
     counts = {key: sum(item["review_status"] == key for item in items) for key in ("confirmed", "confirmed_empty", "pending")}
-    return {"dataset_id": dataset_id, "total": len(items), **counts, "items": items}
+    return {"dataset_id": dataset_id, "total": len(items), **counts, "items": items,
+            **progress_summary(list(progress.values()))}
 
 
 def adopt_historical(session: Session, storage: Storage, dataset_id: str, items: list[dict], *, actor: str, reason: str) -> list[dict]:

@@ -8,6 +8,13 @@ export interface Dataset {
   task_type: TaskType;
   image_count: number;
   annotated_image_count: number;
+  generated_image_count?: number;
+  pending_review_image_count?: number;
+  confirmed_image_count?: number;
+  confirmed_empty_image_count?: number;
+  workflow_image_count?: number;
+  latest_workflow_run_id?: string | null;
+  latest_workflow_review_id?: string | null;
   class_count: number;
   created_at: string;
   updated_at: string;
@@ -33,6 +40,11 @@ export interface ImageItem {
   status: string;
   annotation_revision?: number;
   review_status?: string;
+  workflow_run_id?: string | null;
+  workflow_review_id?: string | null;
+  workflow_annotation_count?: number;
+  workflow_status?: string | null;
+  workflow_stale?: boolean;
   roi_mask_ref?: string | null;
   ignore_mask_ref?: string | null;
   source_type?: string;

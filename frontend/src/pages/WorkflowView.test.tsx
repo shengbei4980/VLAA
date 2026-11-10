@@ -23,12 +23,50 @@ vi.mock("../api/client", () => ({
   apiUrl: (path: string) => path,
 }));
 vi.mock("./WorkflowRunView", () => ({
-  WorkflowRunView: ({ runId }: { runId: string }) => <p>运行 {runId}</p>,
+  WorkflowRunView: ({ runId, initialReviewId }: { runId: string; initialReviewId?: string }) => <p>运行 {runId}{initialReviewId ? ` · 复核 ${initialReviewId}` : ""}</p>,
 }));
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true;
 describe("reviewable launch scope", () => {
+  it("opens the exact workflow review linked from a dataset", async () => {
+    vi.clearAllMocks();
+    window.history.replaceState(null, "", "#workflow/run-target/review/review-target");
+    vi.mocked(workflowApi.profiles).mockResolvedValue([]);
+    vi.mocked(workflowApi.templates).mockResolvedValue([]);
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    await act(async () => root.render(<WorkflowView datasets={[]} onSettings={vi.fn()} onOpenTraining={vi.fn()} onOpenModel={vi.fn()} />));
+    expect(container.textContent).toBe("运行 run-target · 复核 review-target");
+    act(() => root.unmount());
+    window.history.replaceState(null, "", "#workflow");
+  });
+
+  it("preselects the originating dataset and latest visual LLM template", async () => {
+    vi.clearAllMocks();
+    window.history.replaceState(null, "", "#workflow");
+    const datasets: Dataset[] = [
+      { id: "first", name: "First", task_type: "detect", description: null, image_count: 0, annotated_image_count: 0, class_count: 0, created_at: "", updated_at: "" },
+      { id: "target", name: "Tower", task_type: "segment", description: null, image_count: 0, annotated_image_count: 0, class_count: 0, created_at: "", updated_at: "" },
+    ];
+    vi.mocked(workflowApi.profiles).mockResolvedValue([]);
+    vi.mocked(workflowApi.templates).mockResolvedValue([
+      { id: "model", key: "model", name: "Model", version: 1, nodes: [] },
+      { id: "llm-old", key: "vision", name: "Visual", version: 1, nodes: [{ id: "propose", type: "vision_propose", scope: "item", version: 1, params: { source: "vision" } }] },
+      { id: "llm-new", key: "vision", name: "Visual", version: 2, nodes: [{ id: "propose", type: "vision_propose", scope: "item", version: 1, params: { source: "vision" } }] },
+    ]);
+    vi.mocked(workflowApi.runs).mockResolvedValue([]);
+    vi.mocked(api.listImages).mockResolvedValue({ total: 0, items: [] });
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    await act(async () => root.render(<WorkflowView datasets={datasets} initialDatasetId="target" onSettings={vi.fn()} onOpenTraining={vi.fn()} onOpenModel={vi.fn()} />));
+    expect(container.querySelector<HTMLSelectElement>(".workflow-dataset-select select")?.value).toBe("target");
+    expect(container.querySelector<HTMLSelectElement>(".workflow-advanced select")?.value).toBe("llm-new");
+    expect(api.listImages).toHaveBeenCalledWith("target");
+    expect(api.listImages).not.toHaveBeenCalledWith("first");
+    expect(container.textContent).toContain("请核对类别与模型方案");
+    act(() => root.unmount());
+  });
   beforeEach(() => {
     window.localStorage.clear();
     vi.mocked(workflowApi.projects).mockResolvedValue([]);

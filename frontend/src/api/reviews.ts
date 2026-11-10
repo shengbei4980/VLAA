@@ -16,12 +16,24 @@ export interface DatasetReviewStatus {
   pending: number;
   confirmed_empty: number;
   total: number;
+  generated_image_count?: number;
+  pending_review_image_count?: number;
+  confirmed_image_count?: number;
+  confirmed_empty_image_count?: number;
+  workflow_image_count?: number;
   items: Array<{
     image_id: string;
+    file_name?: string;
     revision: number;
     review_status: string;
     annotation_count: number;
     contains_auto: boolean;
+    has_draft?: boolean;
+    workflow_run_id?: string | null;
+    workflow_review_id?: string | null;
+    workflow_annotation_count?: number;
+    workflow_status?: string | null;
+    workflow_stale?: boolean;
   }>;
 }
 async function request<T>(path: string, body?: unknown): Promise<T> {

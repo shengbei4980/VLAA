@@ -30,6 +30,8 @@ export function WorkflowView({
   onOpenModel,
   onDirtyChange,
   onStorageSettings,
+  initialDatasetId,
+  onDataChanged,
 }: {
   datasets: Dataset[];
   onSettings: () => void;
@@ -37,6 +39,8 @@ export function WorkflowView({
   onOpenModel: (datasetId: string | undefined, modelId: string) => void;
   onDirtyChange?: (dirty: boolean) => void;
   onStorageSettings?: () => void;
+  initialDatasetId?: string;
+  onDataChanged?: () => void;
 }) {
   const [profiles, setProfiles] = useState<TaskProfile[]>([]);
   const [templates, setTemplates] = useState<WorkflowTemplate[]>([]);
@@ -44,14 +48,12 @@ export function WorkflowView({
   const [project, setProject] = useState<WorkflowProject>();
   const [projectReady, setProjectReady] = useState(false);
   const [templateId, setTemplateId] = useState("");
-  const [datasetId, setDatasetId] = useState(datasets[0]?.id ?? "");
+  const [datasetId, setDatasetId] = useState(initialDatasetId ?? datasets[0]?.id ?? "");
   const [images, setImages] = useState<ImageItem[]>([]);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
-  const [runId, setRunId] = useState(() =>
-    window.location.hash.startsWith("#workflow/")
-      ? decodeURIComponent(window.location.hash.slice(10))
-      : "",
-  );
+  const [entryRoute] = useState(readWorkflowRoute);
+  const [runId, setRunId] = useState(entryRoute.runId);
+  const [initialReviewId, setInitialReviewId] = useState(entryRoute.reviewId);
   const [editingProfile, setEditingProfile] = useState<
     TaskProfile | null | undefined
   >();
@@ -76,8 +78,16 @@ export function WorkflowView({
     ]);
     setProfiles(nextProfiles);
     setTemplates(nextTemplates);
-    setProfileId((current) => current || nextProfiles[0]?.id || "");
-    setTemplateId((current) => current || nextTemplates[0]?.id || "");
+    const targetDataset = datasets.find((item) => item.id === initialDatasetId);
+    const matchingProfile = targetDataset
+      ? nextProfiles.find((item) => item.config.task_type === targetDataset.task_type)
+      : nextProfiles[0];
+    const visualTemplate = initialDatasetId
+      ? nextTemplates.filter((item) => item.nodes.some((node) => node.type === "vision_propose" && node.params?.source === "vision"))
+        .sort((left, right) => right.version - left.version)[0]
+      : undefined;
+    setProfileId((current) => current || matchingProfile?.id || "");
+    setTemplateId((current) => current || visualTemplate?.id || nextTemplates[0]?.id || "");
   };
   useEffect(() => {
     void refresh()
@@ -85,11 +95,7 @@ export function WorkflowView({
       .finally(() => setBusy(false));
   }, []);
   useEffect(() => {
-    window.history.replaceState(
-      null,
-      "",
-      runId ? `#workflow/${encodeURIComponent(runId)}` : "#workflow",
-    );
+    if (!runId) window.history.replaceState(null, "", "#workflow");
   }, [runId]);
   useEffect(() => {
     if (!datasetId && datasets[0]) setDatasetId(datasets[0].id);
@@ -224,11 +230,15 @@ export function WorkflowView({
   if (runId)
     return (
       <WorkflowRunView
+        key={runId}
         onDirtyChange={onDirtyChange}
+        onDataChanged={onDataChanged}
+        initialReviewId={initialReviewId}
         runId={runId}
-        onOpenRun={setRunId}
+        onOpenRun={(id) => { setInitialReviewId(""); setRunId(id); }}
         onBack={() => {
           setRunId("");
+          setInitialReviewId("");
           void refresh().catch((reason) => setError(String(reason)));
         }}
         onOpenTraining={onOpenTraining}
@@ -276,6 +286,7 @@ export function WorkflowView({
           <span className="eyebrow">图像任务助手</span>
           <h1>通用图像工作流</h1>
           <p>先选择要做的工作，再选图片与模型。每个步骤都有用途说明。</p>
+          {initialDatasetId && dataset && <p className="hint">已选择数据集“{dataset.name}”。请核对类别与模型方案，再预览本次任务。</p>}
         </div>
         <div className="workflow-actions">
           {onStorageSettings && (
@@ -691,7 +702,7 @@ export function WorkflowView({
           预览本次任务
         </button>
       </section>
-      <WorkflowRunHistory profiles={profiles} templates={templates} onOpenRun={setRunId} />
+      <WorkflowRunHistory profiles={profiles} templates={templates} onOpenRun={(id) => { setInitialReviewId(""); setRunId(id); }} />
       {launching && profile && template && (
         <div className="modal-backdrop">
           <section
@@ -832,4 +843,16 @@ export function WorkflowView({
       )}
     </main>
   );
+}
+
+function readWorkflowRoute(): { runId: string; reviewId: string } {
+  const match = window.location.hash.match(/^#workflow\/([^/]+)(?:\/review\/([^/]+))?$/);
+  try {
+    return {
+      runId: match ? decodeURIComponent(match[1]) : "",
+      reviewId: match?.[2] ? decodeURIComponent(match[2]) : "",
+    };
+  } catch {
+    return { runId: "", reviewId: "" };
+  }
 }

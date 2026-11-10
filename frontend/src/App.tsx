@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { AnnotationCanvas, type AnnotationDraft } from "./annotation/AnnotationCanvas";
 import { api, apiUrl } from "./api/client";
 import { StarterShell, type StarterSection } from "./components/StarterShell";
@@ -14,6 +14,7 @@ import { visionApi } from "./api/vision";
 import { AnnotationReviewPanel } from "./components/AnnotationReviewPanel";
 import { StorageStatusBanner } from "./components/StorageStatusBanner";
 import { DatasetReviewStatusPanel } from "./components/DatasetReviewStatusPanel";
+import { DatasetAnnotationSummary } from "./components/DatasetAnnotationSummary";
 import { AutoAnnotationModal } from "./components/AutoAnnotationModal";
 import { ImportCenterModal } from "./components/ImportCenterModal";
 import { readLocale, saveLocale, type AppLocale } from "./locale";
@@ -43,20 +44,22 @@ export default function App() {
   const [annotationDirty, setAnnotationDirty] = useState(false);
   const [workflowDirty, setWorkflowDirty] = useState(false);
   const [storageRefreshToken, setStorageRefreshToken] = useState(0);
+  const [datasetRefreshToken, setDatasetRefreshToken] = useState(0);
+  const [workflowDatasetId, setWorkflowDatasetId] = useState<string>();
+  const datasetRefreshGeneration = useRef(0);
   const [focusTrainingTaskId, setFocusTrainingTaskId] = useState<string>();
   const [focusModelId, setFocusModelId] = useState<string>();
   const [agentFocus, setAgentFocus] = useState<AgentPageContext>({});
   const { requestLeave, dialog: leaveDialog } = useLeaveConfirm((view === "annotation" && annotationDirty) || (view === "workflow" && workflowDirty));
 
-  const refreshDatasets = async () => {
+  const refreshDatasets = useCallback(async () => {
+    const generation = ++datasetRefreshGeneration.current;
     const result = await api.listDatasets();
+    if (generation !== datasetRefreshGeneration.current) return;
     setDatasets(result);
-    if (result.length > 0) setNotice("");
-    if (selected) {
-      const current = result.find((dataset) => dataset.id === selected.id);
-      if (current) setSelected(current);
-    }
-  };
+    setSelected((current) => current ? result.find((dataset) => dataset.id === current.id) ?? current : current);
+    setDatasetRefreshToken((token) => token + 1);
+  }, []);
 
   const loadDataset = async (dataset: Dataset, nextView: View = "workspace") => {
     setNotice("");
@@ -93,9 +96,26 @@ export default function App() {
   }, [view]);
 
   useEffect(() => {
-    refreshDatasets().catch((reason: unknown) => setError(errorMessage(reason)));
     api.getSystemInfo().then((info) => setSamCapabilities(info.sam)).catch((reason: unknown) => setError(errorMessage(reason)));
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    const refresh = () => {
+      if (document.hidden) return;
+      void refreshDatasets().catch((reason: unknown) => {
+        if (active) setError(errorMessage(reason));
+      });
+    };
+    refresh();
+    window.addEventListener("focus", refresh);
+    const timer = view === "workspace" ? window.setInterval(refresh, 5000) : undefined;
+    return () => {
+      active = false;
+      window.removeEventListener("focus", refresh);
+      if (timer !== undefined) window.clearInterval(timer);
+    };
+  }, [view, refreshDatasets]);
 
   const run = async (action: () => Promise<void>) => {
     setBusy(true);
@@ -144,6 +164,7 @@ export default function App() {
         if (layer in regions) regionRefs[`${layer}_mask_ref`] = regions[layer] ? (await visionApi.saveMask(regions[layer]!)).mask_ref : null;
       }
       const saved = await api.replaceAnnotations(selected.id, imageId, prepared, expectedRevision, regionRefs);
+      await refreshDatasets();
       const updateImage = (item: ImageItem): ImageItem => item.id === imageId ? { ...item, ...regionRefs, annotation_revision: (expectedRevision ?? 0) + 1, review_status: "pending", status: saved.length ? "annotated" : "unannotated" } : item;
       setImages((items) => items.map(updateImage));
       if (currentImage.current?.id !== imageId) return;
@@ -155,6 +176,10 @@ export default function App() {
   };
 
   const continueAnnotation = async (dataset: Dataset) => {
+    if (dataset.pending_review_image_count && dataset.latest_workflow_run_id) {
+      openWorkflow(dataset, dataset.latest_workflow_run_id, dataset.latest_workflow_review_id ?? undefined);
+      return;
+    }
     await run(async () => {
       await loadDataset(dataset);
       const nextImages = await api.listImages(dataset.id);
@@ -201,6 +226,20 @@ export default function App() {
       return;
     }
     proceed();
+  };
+
+  const openWorkflow = (dataset: Dataset, runId?: string, reviewId?: string) => {
+    requestLeave(() => {
+      setAnnotationDirty(false);
+      setWorkflowDirty(false);
+      setError("");
+      setNotice("");
+      setSelected(dataset);
+      setWorkflowDatasetId(dataset.id);
+      const path = runId ? `#workflow/${encodeURIComponent(runId)}${reviewId ? `/review/${encodeURIComponent(reviewId)}` : ""}` : "#workflow";
+      window.history.replaceState(null, "", path);
+      setView("workflow");
+    });
   };
 
   const resolveDataset = async (datasetId: string): Promise<Dataset | undefined> => {
@@ -307,6 +346,8 @@ export default function App() {
           samCapabilities={samCapabilities}
         />
       ) : view === "training" && displayedDataset ? (
+        <>
+        {!!displayedDataset.pending_review_image_count && <section className="panel dataset-training-review-notice"><p>有 {displayedDataset.pending_review_image_count} 张图片的标注待人工确认。完成整图确认后，训练会读取最新确认的数据。</p><button className="button" onClick={() => void continueAnnotation(displayedDataset)}>前往复核标注</button></section>}
         <TrainingView
           datasets={datasets}
           dataset={displayedDataset}
@@ -316,6 +357,7 @@ export default function App() {
           focusTaskId={focusTrainingTaskId}
           onFocusTaskConsumed={() => setFocusTrainingTaskId(undefined)}
         />
+        </>
       ) : view === "models" && displayedDataset ? (
         <ModelsView
           dataset={displayedDataset}
@@ -323,7 +365,7 @@ export default function App() {
           onFocusModelConsumed={() => setFocusModelId(undefined)}
           onAskAgent={(model) => { setAgentFocus({ ...(model.dataset_id ? { dataset: { id: model.dataset_id, name: datasets.find((d) => d.id === model.dataset_id)?.name ?? model.dataset_id } } : {}), model: { id: model.id, name: model.name } }); setView("agent"); }}
         />
-      ) : view === "workflow" ? <WorkflowView onStorageSettings={() => setView("settings-storage")} onDirtyChange={setWorkflowDirty} datasets={datasets} onSettings={() => setView("settings-vision")} onOpenTraining={(datasetId, taskId) => void openAgentTrainingTask(datasetId, taskId)} onOpenModel={(datasetId, modelId) => void openAgentModel(datasetId, modelId)} /> : view === "settings-llm" || view === "settings-sam" || view === "settings-vision" || view === "settings-storage" || view === "settings-language" ? (
+      ) : view === "workflow" ? <WorkflowView initialDatasetId={workflowDatasetId} onDataChanged={() => void refreshDatasets().catch((reason: unknown) => setError(errorMessage(reason)))} onStorageSettings={() => setView("settings-storage")} onDirtyChange={setWorkflowDirty} datasets={datasets} onSettings={() => setView("settings-vision")} onOpenTraining={(datasetId, taskId) => void openAgentTrainingTask(datasetId, taskId)} onOpenModel={(datasetId, modelId) => void openAgentModel(datasetId, modelId)} /> : view === "settings-llm" || view === "settings-sam" || view === "settings-vision" || view === "settings-storage" || view === "settings-language" ? (
         <SettingsView
           tab={view === "settings-llm" ? "llm" : view === "settings-sam" ? "sam" : view === "settings-vision" ? "vision" : view === "settings-storage" ? "storage" : "language"}
           locale={locale}
@@ -357,6 +399,9 @@ export default function App() {
           onAskAgent={(dataset) => { setAgentFocus({ dataset: { id: dataset.id, name: dataset.name } }); setView("agent"); }}
           agentLabel={locale === "zh" ? "询问助手" : "Ask assistant"}
           onAutoAnnotationComplete={() => void refreshDatasets()}
+          refreshToken={datasetRefreshToken}
+          onStartLlmAnnotation={(dataset) => openWorkflow(dataset)}
+          onOpenWorkflowReview={openWorkflow}
           onVideoImportComplete={(task) => run(async () => {
             await refreshDatasets();
             const dataset = task.dataset_id ? (await api.listDatasets()).find((item) => item.id === task.dataset_id) : undefined;
@@ -405,6 +450,9 @@ export function DatasetHome(props: {
   onAskAgent?: (dataset: Dataset) => void;
   agentLabel?: string;
   onAutoAnnotationComplete?: () => void;
+  refreshToken?: number;
+  onStartLlmAnnotation?: (dataset: Dataset) => void;
+  onOpenWorkflowReview?: (dataset: Dataset, runId: string, reviewId?: string) => void;
   onVideoImportComplete?: (task: import("./types").VideoImportTask) => Promise<void> | void;
   onContinueAnnotation: (dataset: Dataset) => void;
   onReviewImage?: (dataset: Dataset, imageId: string) => void;
@@ -492,10 +540,10 @@ export function DatasetHome(props: {
         {props.datasets.map((dataset, index) => <article key={dataset.id} className="dataset-card">
           <header><span className={`dataset-icon tone-${index % 3}`}>{dataset.task_type === "segment" || dataset.task_type === "obb" ? "◇" : dataset.task_type === "classify" ? "○" : "□"}</span><div><h2>{dataset.name}</h2><small>{taskDescription(dataset.task_type)}</small></div><div className="dataset-card-header-actions"><span className="status ready">就绪</span><button className="dataset-add-image-action" disabled={props.busy} onClick={() => setUploadTarget(dataset)}>+ 添加图片</button></div></header>
           <div className="dataset-metrics"><span><small>图片</small><strong>{dataset.image_count.toLocaleString()}</strong></span><span><small>类别</small><strong>{dataset.class_count.toLocaleString()}</strong></span></div>
-          <div className="dataset-progress"><span>标注进度</span><strong>{dataset.image_count ? `${Math.round(dataset.annotated_image_count / dataset.image_count * 100)}%` : "等待导入"}</strong></div>
-          <div className="progress-track"><i style={{ width: `${dataset.image_count ? dataset.annotated_image_count / dataset.image_count * 100 : 0}%` }} /></div>
+          <DatasetAnnotationSummary dataset={dataset} onOpenWorkflow={props.onOpenWorkflowReview ? (runId, reviewId) => props.onOpenWorkflowReview?.(dataset, runId, reviewId) : undefined} />
           <button className="button primary dataset-primary-action" disabled={props.busy || !dataset.image_count} onClick={() => props.onContinueAnnotation(dataset)}>继续标注</button>
           <div className="dataset-card-actions">
+            {props.onStartLlmAnnotation && (dataset.task_type === "detect" || dataset.task_type === "segment") && <button className="button dataset-auto-annotation-action" disabled={props.busy || !dataset.image_count} onClick={() => props.onStartLlmAnnotation?.(dataset)}>LLM 自动标注</button>}
             {props.onAskAgent ? <button className="button" disabled={props.busy} onClick={() => props.onAskAgent?.(dataset)}>{props.agentLabel ?? "询问助手"}</button> : null}
             <button className="button" disabled={props.busy} onClick={() => props.onTrain(dataset)}>训练</button>
             <button className="button dataset-auto-annotation-action" disabled={props.busy || !dataset.image_count} onClick={() => setAutoAnnotationTarget(dataset)}>自动标注</button>
@@ -505,7 +553,7 @@ export function DatasetHome(props: {
             <button className="button" disabled={props.busy} onClick={() => void toggleQuality(dataset)}>{isReportOpen(dataset.id, "quality") ? "收起报告" : "质量报告"}</button>
             <button className="button dataset-delete-action" disabled={props.busy} onClick={() => setDeleteTarget(dataset)}>删除</button>
           </div>
-          {props.onReviewImage && <DatasetReviewStatusPanel datasetId={dataset.id} onOpenImage={(imageId) => props.onReviewImage?.(dataset, imageId)} />}
+          {props.onReviewImage && <DatasetReviewStatusPanel datasetId={dataset.id} refreshToken={props.refreshToken} onOpenImage={(imageId) => props.onReviewImage?.(dataset, imageId)} onOpenWorkflowReview={props.onOpenWorkflowReview ? (runId, reviewId) => props.onOpenWorkflowReview?.(dataset, runId, reviewId) : undefined} />}
           {isReportOpen(dataset.id, "validation") && validationReports[dataset.id] && <CardReport onClose={() => closeReport(dataset.id)}><ValidationPanel report={validationReports[dataset.id]} compact /></CardReport>}
           {isReportOpen(dataset.id, "quality") && qualityReports[dataset.id] && <CardReport onClose={() => closeReport(dataset.id)}><QualityPanel report={qualityReports[dataset.id]} compact /></CardReport>}
           {isReportOpen(dataset.id, "duplicates") && duplicateReports[dataset.id] && <CardReport onClose={() => closeReport(dataset.id)}><DuplicatePanel report={duplicateReports[dataset.id]} compact /></CardReport>}
@@ -683,7 +731,7 @@ export function AnnotationView(props: { dataset: Dataset; image: ImageItem; imag
   };
   useEffect(() => { const onKey = (event: KeyboardEvent) => { if (event.defaultPrevented) return; if (pendingMaskDrawing) { if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") event.preventDefault(); return; } if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLSelectElement) return; if ((event.key === "Delete" || event.key === "Backspace") && selectedAnnotationId) { event.preventDefault(); deleteAnnotation(selectedAnnotationId); return; } if (event.key === "Escape") { setSelectedAnnotationId(null); return; } if (event.key === "ArrowLeft" && props.hasPrevious && !props.busy) props.onPrevious?.(); if (event.key === "ArrowRight" && props.hasNext && !props.busy) props.onNext?.(); if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") { event.preventDefault(); if (!props.busy) persistDrafts(); } }; window.addEventListener("keydown", onKey); return () => window.removeEventListener("keydown", onKey); }, [drafts, props, regions, selectedAnnotationId, pendingMaskDrawing]);
   return <main className="annotation-layout"><div className="annotation-head"><button className="button" onClick={props.onBack}>← 返回数据集</button><div><span className="eyebrow">{props.dataset.name} / {props.dataset.task_type}</span><h1>{props.image.file_name}</h1><p className="muted">←/→ 切换图片 · ⌘/Ctrl+S 保存 <span className={`annotation-save-state${isDirty ? " dirty" : ""}`} role="status">· {isDirty ? "未保存修改" : "已保存"}</span></p></div><div className="annotation-navigation" aria-label="图片导航">{props.onPrevious && <button className="button" disabled={props.busy || !props.hasPrevious} title="上一张（←）" onClick={props.onPrevious}>← 上一张</button>}{props.onNext && <button className="button" disabled={props.busy || !props.hasNext} title="下一张（→）" onClick={props.onNext}>下一张 →</button>}</div><div className="annotation-actions"><select aria-label="当前类别" value={activeClassId} disabled={!props.classes.length} onChange={(event) => props.onClassChange(event.target.value)}>{!props.classes.length && <option value="">请先新增类别</option>}{props.classes.map((item) => <option key={item.id} value={item.id}>{item.class_index}: {item.name}</option>)}</select><button className="button primary" disabled={props.busy || pendingMaskDrawing || !activeClassId} onClick={persistDrafts}>保存标注</button></div></div><div className="annotation-body">
-    {props.images && props.images.length > 0 && <aside className="annotation-image-sidebar panel"><div className="annotation-list-heading"><span className="eyebrow">DATASET IMAGES</span><strong>{imageCount} 张图片</strong></div><div className="annotation-image-split-tabs" role="tablist" aria-label="按数据集 split 筛选图片">{IMAGE_SPLIT_FILTERS.map((filter) => <button key={filter.value || "all"} type="button" role="tab" aria-selected={imageSplitFilter === filter.value} className={imageSplitFilter === filter.value ? "active" : ""} onClick={() => setImageSplitFilter(filter.value)}>{filter.label}</button>)}</div><div className="annotation-image-list">{filteredImages.slice(imagePage * ANNOTATION_IMAGE_PAGE_SIZE, (imagePage + 1) * ANNOTATION_IMAGE_PAGE_SIZE).map((item, index) => { const absoluteIndex = imagePage * ANNOTATION_IMAGE_PAGE_SIZE + index; return <button key={item.id} className={item.id === props.image.id ? "annotation-image-item active" : "annotation-image-item"} aria-label={`选择图片 ${item.file_name}`} onClick={() => props.onImageSelect?.(item)}><img src={apiUrl(item.file_url)} alt="" /><span className="annotation-image-copy"><strong>{String(absoluteIndex + 1).padStart(2, "0")} · {item.file_name}</strong><small className={item.status === "annotated" ? "annotated" : "unannotated"}>{item.split} · {item.status === "annotated" ? "已标注" : "未标注"}</small></span></button>; })}{!filteredImages.length && <p className="annotation-empty-state">当前 split 没有图片。</p>}</div>{imagePageCount > 1 && <div className="annotation-image-pagination"><button className="button" disabled={imagePage === 0} onClick={() => setImagePage((page) => Math.max(0, page - 1))}>上一页</button><span>第 {imagePage + 1} / {imagePageCount} 页</span><button className="button" disabled={imagePage >= imagePageCount - 1} onClick={() => setImagePage((page) => Math.min(imagePageCount - 1, page + 1))}>下一页</button></div>}</aside>}
+    {props.images && props.images.length > 0 && <aside className="annotation-image-sidebar panel"><div className="annotation-list-heading"><span className="eyebrow">DATASET IMAGES</span><strong>{imageCount} 张图片</strong></div><div className="annotation-image-split-tabs" role="tablist" aria-label="按数据集 split 筛选图片">{IMAGE_SPLIT_FILTERS.map((filter) => <button key={filter.value || "all"} type="button" role="tab" aria-selected={imageSplitFilter === filter.value} className={imageSplitFilter === filter.value ? "active" : ""} onClick={() => setImageSplitFilter(filter.value)}>{filter.label}</button>)}</div><div className="annotation-image-list">{filteredImages.slice(imagePage * ANNOTATION_IMAGE_PAGE_SIZE, (imagePage + 1) * ANNOTATION_IMAGE_PAGE_SIZE).map((item, index) => { const absoluteIndex = imagePage * ANNOTATION_IMAGE_PAGE_SIZE + index; return <button key={item.id} className={item.id === props.image.id ? "annotation-image-item active" : "annotation-image-item"} aria-label={`选择图片 ${item.file_name}`} onClick={() => props.onImageSelect?.(item)}><img src={apiUrl(item.file_url)} alt="" /><span className="annotation-image-copy"><strong>{String(absoluteIndex + 1).padStart(2, "0")} · {item.file_name}</strong><small className={item.status === "annotated" ? "annotated" : "unannotated"}>{item.split} · {item.workflow_review_id ? "有 LLM 标注，查看复核" : item.status === "annotated" ? "已标注" : "未标注"}</small></span></button>; })}{!filteredImages.length && <p className="annotation-empty-state">当前 split 没有图片。</p>}</div>{imagePageCount > 1 && <div className="annotation-image-pagination"><button className="button" disabled={imagePage === 0} onClick={() => setImagePage((page) => Math.max(0, page - 1))}>上一页</button><span>第 {imagePage + 1} / {imagePageCount} 页</span><button className="button" disabled={imagePage >= imagePageCount - 1} onClick={() => setImagePage((page) => Math.min(imagePageCount - 1, page + 1))}>下一页</button></div>}</aside>}
     <div className="annotation-canvas-column">{props.dataset.task_type === "classify" ? <section className="canvas-card classification-card"><span className="eyebrow">IMAGE CLASSIFICATION</span><h2>选择这张图片的唯一类别</h2><p className="hint">分类数据集每张图片只能保存一个类别，训练时会按 train/类别名/图片 导出。</p>{props.classes.length ? <div className="class-strip">{props.classes.map((item) => <button key={item.id} className={drafts[0]?.class_id === item.id ? "class-chip active" : "class-chip"} onClick={() => chooseClass(item.id)}><i style={{ background: item.color }} />{item.class_index}: {item.name}</button>)}</div> : <p className="annotation-empty-state">还没有类别，请在右侧“类别”面板中新增一个类别。</p>}</section> : props.dataset.task_type === "segment" ? <StandaloneMaskEditor image={props.image} classes={props.classes} drafts={drafts} activeClassId={activeClassId} selectedId={selectedAnnotationId} onSelect={(id) => { setSelectedAnnotationId(id); const draft = drafts.find((item, index) => draftId(item, index) === id); if (draft) props.onClassChange(draft.class_id); }} onChange={(items) => { if (!props.busy) setDrafts(items); }} onRegionsChange={setRegions} onDrawingChange={setPendingMaskDrawing} onSamBox={(box) => void requestSam(box)} onSamPoints={(points) => void requestSamPoints(points.map((point) => [point.x, point.y, point.label]))} busy={props.busy} /> : <AnnotationCanvas image={props.image} classes={props.classes} annotations={annotated} activeClassId={activeClassId} selectedAnnotationId={selectedAnnotationId} onSelectAnnotation={setSelectedAnnotationId} taskType={props.dataset.task_type} onChange={(items) => { if (!props.busy) setDrafts(items); }} samBusy={props.busy} samCapabilities={props.samCapabilities} />}<AnnotationReviewPanel key={`${props.image.id}-${JSON.stringify(props.annotations)}`} datasetId={props.dataset.id} imageId={props.image.id} taskType={props.dataset.task_type} dirty={isDirty} onLoadDraft={(items) => setDrafts(items.map(toDraft))} /></div>
     <aside className="annotation-sidebar panel"><section className="annotation-class-manager"><div className="annotation-sidebar-heading"><div><span className="eyebrow">LABEL CLASSES</span><h2>{props.classes.length} 个类别</h2></div><button type="button" className="button" disabled={props.busy || !props.onCreateClass} onClick={() => setShowClassForm((value) => !value)}>{showClassForm ? "收起" : "+ 新增类别"}</button></div>{showClassForm && <form className="annotation-class-form" onSubmit={(event) => void addClass(event)}><label><span>类别名称</span><input autoFocus value={newClassName} placeholder="例如：person" onChange={(event) => setNewClassName(event.target.value)} /></label><div className="annotation-class-form-row"><label><span>颜色</span><input aria-label="类别颜色" type="color" value={newClassColor} onChange={(event) => setNewClassColor(event.target.value)} /></label><button className="button primary" type="submit" disabled={props.busy || !newClassName.trim()}>添加</button></div>{classError && <small className="annotation-form-error">{classError}</small>}</form>}<div className="annotation-class-list">{props.classes.map((item) => <button type="button" key={item.id} className={`annotation-class-item${item.id === activeClassId ? " active" : ""}`} onClick={() => props.onClassChange(item.id)}><i style={{ background: item.color }} /><span><strong>{item.class_index}. {item.name}</strong><small>{item.id === activeClassId ? "当前绘制类别" : "点击切换"}</small></span></button>)}{!props.classes.length && <p className="muted">先新增一个类别，标注对象就不会再显示为“未选择类别”。</p>}</div></section><section className="annotation-shape-list"><div className="annotation-sidebar-heading"><div><span className="eyebrow">SAVED SHAPES</span><h2>{drafts.length} 个标注</h2></div></div>{drafts.map((draft, index) => { const id = draftId(draft, index); return <div className={`shape-row${id === selectedAnnotationId ? " active" : ""}`} key={id} role="button" tabIndex={0} onClick={() => { setSelectedAnnotationId(id); props.onClassChange(draft.class_id); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setSelectedAnnotationId(id); } }}><span className="shape-index">{index + 1}</span><div><select className="shape-class-select" aria-label={`标注 ${index + 1} 类别`} value={draft.class_id} disabled={!props.classes.length} onClick={(event) => event.stopPropagation()} onChange={(event) => changeDraftClass(index, event.target.value)}>{!props.classes.length && <option value="">未选择类别</option>}{props.classes.map((item) => <option key={item.id} value={item.id}>{item.class_index}: {item.name}</option>)}</select><small>{annotationLabel(draft.type)}</small></div><button type="button" className="annotation-delete-button" aria-label={`删除标注 ${index + 1}`} title="删除此标注" onClick={(event) => { event.stopPropagation(); deleteAnnotation(id); }} onKeyDown={(event) => event.stopPropagation()}><TrashIcon /></button></div>; })}{!drafts.length && <p className="muted">{props.dataset.task_type === "classify" ? "请选择一个类别。" : "在图片上拖拽或点击创建标注。"}</p>}</section></aside></div></main>;
 }

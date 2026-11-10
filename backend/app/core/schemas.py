@@ -46,6 +46,13 @@ class DatasetResponse(ORMModel):
     image_count: int
     annotated_image_count: int
     class_count: int
+    generated_image_count: int = 0
+    pending_review_image_count: int = 0
+    confirmed_image_count: int = 0
+    confirmed_empty_image_count: int = 0
+    workflow_image_count: int = 0
+    latest_workflow_run_id: str | None = None
+    latest_workflow_review_id: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -156,6 +163,11 @@ class ImageItemResponse(ORMModel):
     status: str
     annotation_revision: int = 0
     review_status: str = "pending"
+    workflow_run_id: str | None = None
+    workflow_review_id: str | None = None
+    workflow_annotation_count: int = 0
+    workflow_status: str | None = None
+    workflow_stale: bool = False
     roi_mask_ref: str | None = None
     ignore_mask_ref: str | None = None
     source_type: str

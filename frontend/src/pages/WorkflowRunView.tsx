@@ -39,6 +39,8 @@ export function WorkflowRunView({
   onOpenModel,
   onOpenRun,
   onDirtyChange,
+  onDataChanged,
+  initialReviewId,
 }: {
   runId: string;
   onBack: () => void;
@@ -46,15 +48,17 @@ export function WorkflowRunView({
   onOpenModel: (datasetId: string | undefined, modelId: string) => void;
   onOpenRun?: (id: string) => void;
   onDirtyChange?: (dirty: boolean) => void;
+  onDataChanged?: () => void;
+  initialReviewId?: string;
 }) {
   const [run, setRun] = useState<WorkflowRun>();
-  const [reviewId, setReviewId] = useState("");
+  const [reviewId, setReviewId] = useState(initialReviewId ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const refresh = async () => setRun(await workflowApi.run(runId));
   useEffect(() => {
     setRun(undefined);
-    setReviewId("");
+    setReviewId(initialReviewId ?? "");
     let active = true;
     let pending = false;
     const poll = async () => {
@@ -82,6 +86,9 @@ export function WorkflowRunView({
       window.clearInterval(timer);
     };
   }, [runId]);
+  useEffect(() => {
+    window.history.replaceState(null, "", `#workflow/${encodeURIComponent(runId)}${reviewId ? `/review/${encodeURIComponent(reviewId)}` : ""}`);
+  }, [runId, reviewId]);
   const control = async (
     action: "cancel" | "resume" | "retry",
     itemIds?: string[],
@@ -108,9 +115,10 @@ export function WorkflowRunView({
           setReviewId("");
           void refresh().catch((reason) => setError(String(reason)));
         }}
-        onSaved={() =>
-          void refresh().catch((reason) => setError(String(reason)))
-        }
+        onSaved={() => {
+          onDataChanged?.();
+          void refresh().catch((reason) => setError(String(reason)));
+        }}
       />
     );
   const counts = run?.batch_counts ?? {};
