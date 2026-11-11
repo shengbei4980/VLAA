@@ -135,13 +135,11 @@ def confirm_workflow_review(session: Session, storage: Storage, context: dict, d
     if image.annotation_revision != base_revision or image_hash(storage, image) != expected_hash:
         raise ConflictError("review_revision_conflict", "The source image or labels changed after this workflow started.")
     issues = payload.get("issues") or []
-    resolutions = decision.get("semantic_resolutions") or {}
+    # A whole-image human decision is sufficient for advisory LLM findings.
+    # Optional notes remain in the receipt; never invent per-issue resolutions.
     for issue in issues:
-        if issue.get("blocking"):
+        if issue.get("blocking") or issue.get("severity") == "error":
             raise ValidationError("review_blocking_issue", "Resolve blocking geometry or schema issues before confirmation.")
-        issue_id = issue.get("id")
-        if issue_id and not resolutions.get(issue_id):
-            raise ValidationError("review_resolution_required", "Record a decision for each remaining review issue.")
     from app.dataset.annotation.masks import MaskService
 
     annotations: list[AnnotationInput] = []

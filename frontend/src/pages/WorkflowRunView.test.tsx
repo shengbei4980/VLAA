@@ -4,7 +4,7 @@ import { createRoot } from "react-dom/client";
 import { describe, expect, it, vi } from "vitest";
 import { WorkflowRunView } from "./WorkflowRunView";
 import { workflowApi } from "../api/workflows";
-import type { WorkflowRun } from "../types/workflows";
+import type { WorkflowRun, WorkflowReview } from "../types/workflows";
 vi.mock("../api/workflows", () => ({
   workflowApi: {
     run: vi.fn(),
@@ -14,14 +14,41 @@ vi.mock("../api/workflows", () => ({
   },
 }));
 vi.mock("./ArtifactReviewView", () => ({
-  ArtifactReviewView: ({ reviewId, onSaved }: { reviewId: string; onSaved: () => void }) => (
-    <p>复核 {reviewId}<button onClick={onSaved}>保存并同步</button></p>
+  ArtifactReviewView: ({ reviewId, onSaved, onNext, batchPosition }: { reviewId: string; onSaved: (saved?: WorkflowReview) => void; onNext?: () => void; batchPosition?: { index: number; total: number; remaining: number } }) => (
+    <div>复核 {reviewId}<button onClick={() => onSaved()}>保存并同步</button>
+      {batchPosition && <p>第 {batchPosition.index} / {batchPosition.total} 张 · 其余 {batchPosition.remaining}</p>}
+      {onNext && <button onClick={() => { onSaved({ id: reviewId, revision: 2, status: "decided" } as WorkflowReview); onNext(); }}>测试确认并继续</button>}
+    </div>
   ),
 }));
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true;
 describe("batch review barrier", () => {
+  it("continues in image order, skips finished reviews and wraps to earlier pending images", async () => {
+    vi.clearAllMocks();
+    const run = {
+      id: "batch-next", status: "awaiting_review", profile_snapshot: {}, template_snapshot: { nodes: [] }, context: {},
+      items: [1, 2, 3, 4, 5].map((n) => ({ id: `item-${n}`, status: "awaiting_review" })),
+      reviews: ["pending", "approved", "pending", "excluded", "pending"].map((status, index) => ({ id: `review-${index + 1}`, item_id: `item-${index + 1}`, status, revision: 1 })),
+      attempts: [], artifacts: [], events: [], batch_counts: {},
+    } as unknown as WorkflowRun;
+    vi.mocked(workflowApi.run).mockResolvedValueOnce(run).mockImplementation(() => new Promise(() => {}));
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<WorkflowRunView runId="batch-next" initialReviewId="review-3" onBack={vi.fn()} onOpenTraining={vi.fn()} onOpenModel={vi.fn()} />));
+      expect(container.textContent).toContain("第 3 / 5 张 · 其余 2");
+      const next = () => Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "测试确认并继续")!;
+      act(() => next().click());
+      expect(container.textContent).toContain("复核 review-5");
+      expect(container.textContent).toContain("第 5 / 5 张 · 其余 1");
+      act(() => next().click());
+      expect(container.textContent).toContain("复核 review-1");
+      expect(container.textContent).toContain("第 1 / 5 张 · 其余 0");
+      expect(next()).toBeUndefined();
+    } finally { act(() => root.unmount()); }
+  });
   it("does not let an old poll overwrite a newer cancellation response", async () => {
     vi.clearAllMocks();
     vi.useFakeTimers();

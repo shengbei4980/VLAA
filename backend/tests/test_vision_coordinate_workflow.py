@@ -115,17 +115,7 @@ def test_bad_proposal_and_review_coordinates_require_human_resolution(environmen
         assert session.get(ImageItem, "image").review_status not in {"confirmed", "confirmed_empty"}
 
     decision = "approved" if keep_valid_object else "background"
-    with pytest.raises(ValidationError) as error:
-        service.decide_review(review["id"], ReviewDecision(expected_revision=review["revision"], decision=decision))
-    assert error.value.error_code == "review_resolution_required"
-    with pytest.raises(ValidationError) as error:
-        service.decide_review(review["id"], ReviewDecision(expected_revision=review["revision"], decision=decision,
-            semantic_resolutions={issues[0]["id"]: "Only one region has been checked."}))
-    assert error.value.error_code == "review_resolution_required"
-
-    decided = service.decide_review(review["id"], ReviewDecision(expected_revision=review["revision"], decision=decision,
-        semantic_resolutions={issue["id"]: "Human inspected the full region and corrected or rejected the uncertain proposal."
-                              for issue in issues}))
+    decided = service.decide_review(review["id"], ReviewDecision(expected_revision=review["revision"], decision=decision))
     assert decided["receipt"]["confirmed_empty"] is (not keep_valid_object)
     with database.session_factory() as session:
         assert session.scalar(select(func.count()).select_from(Annotation)) == int(keep_valid_object)

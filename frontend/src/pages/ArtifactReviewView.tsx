@@ -102,12 +102,16 @@ export function ArtifactReviewView({
   onBack,
   onSaved,
   onDirtyChange,
+  onNext,
+  batchPosition,
 }: {
   reviewId: string;
   profile: TaskProfileConfig;
   onBack: () => void;
-  onSaved: () => void;
+  onSaved: (saved: WorkflowReview) => void;
   onDirtyChange?: (dirty: boolean) => void;
+  onNext?: () => void;
+  batchPosition?: { index: number; total: number; remaining: number };
 }) {
   const [review, setReview] = useState<WorkflowReview>();
   const [payload, setPayload] = useState<ReviewPayload>();
@@ -126,6 +130,9 @@ export function ArtifactReviewView({
   const [notice, setNotice] = useState<ReactNode>("");
   const [coverage, setCoverage] = useState(false);
   const [reason, setReason] = useState("");
+  const [inspectorTab, setInspectorTab] = useState<"objects" | "issues">("objects");
+  const [showCrop, setShowCrop] = useState(false);
+  const inspector = useRef<HTMLElement>(null);
   const savedFingerprint = useRef("");
   const currentPayload = useRef(payload);
   const mounted = useRef(true);
@@ -223,7 +230,7 @@ export function ArtifactReviewView({
     savedFingerprint.current = JSON.stringify(hydrated);
     setHistory([]);
     setFuture([]);
-    onSaved();
+    onSaved(saved);
     return saved;
   };
   const save = async () => {
@@ -249,6 +256,7 @@ export function ArtifactReviewView({
   };
   const decide = async (
     decision: "approved" | "background" | "rejected" | "excluded",
+    advance = false,
   ) => {
     if (!review || !payload || pendingDrawing) return;
     setBusy(true);
@@ -256,10 +264,11 @@ export function ArtifactReviewView({
     try {
       const saved = dirty ? await savePayload() : review;
       const semanticResolutions = Object.fromEntries(
-        payload.issues.map((issue, index) => [
-          issue.id ?? String(index),
-          { resolution: issue.resolution, reason: issue.reason },
-        ]),
+        payload.issues.flatMap((issue, index) =>
+          issue.resolution || issue.reason?.trim()
+            ? [[issue.id ?? String(index), { resolution: issue.resolution, reason: issue.reason }]]
+            : [],
+        ),
       );
       const result = await workflowApi.decide(
         reviewId,
@@ -275,7 +284,8 @@ export function ArtifactReviewView({
           ? "当前图片已确认。批次关卡会等待其余纳入项完成。"
           : "人工决定已保存。",
       );
-      onSaved();
+      onSaved(result);
+      if (advance) onNext?.();
     } catch (failure) {
       if (mounted.current)
         setError(
@@ -387,14 +397,24 @@ export function ArtifactReviewView({
       (issue) => issue.blocking || issue.severity === "error",
     ) ?? [];
   const blocking = blockingIssues.length > 0;
-  const unresolvedIssues =
+  const advisoryIssues =
     payload?.issues.filter(
-      (issue) =>
-        !issue.blocking &&
-        issue.severity !== "error" &&
-        (!issue.resolution || !issue.reason?.trim()),
+      (issue) => !issue.blocking && issue.severity !== "error",
     ) ?? [];
-  const unresolved = unresolvedIssues.length > 0;
+  const unresolvedIssues = advisoryIssues.filter((issue) => !issue.resolution || !issue.reason?.trim());
+  const confirmationHint = busy
+    ? "正在保存或提交，请稍候。"
+    : pendingDrawing
+      ? "请先完成轮廓或取消本次绘制。"
+      : blocking
+        ? `还有 ${blockingIssues.length} 项标注问题，请修正后点击“保存修改”重新检查。`
+        : !accepted.length && profile.task_type === "classify"
+          ? "请先为图片选择类别，再确认整图。"
+          : !coverage
+            ? "核对整图后请勾选下方复选框；LLM 建议无需填写结论和理由。"
+            : !accepted.length
+              ? "本图未保留目标，请使用“确认无目标”。LLM 建议无需填写结论和理由。"
+              : "可以确认并同步到数据集，无需填写 LLM 建议的结论和理由。";
   const classes: ClassLabel[] = profile.class_rules.map((rule, index) => ({
     id: rule.class_id,
     name: rule.name,
@@ -588,11 +608,12 @@ export function ArtifactReviewView({
     <main className="workflow-page workflow-review-page">
       {dialog}
       <header className="workflow-heading">
-        <div>
+        <div className="workflow-review-title">
           <button className="button" onClick={() => requestLeave(onBack)}>
             ← 返回运行
           </button>
           <h1>图像复核</h1>
+          {batchPosition && <span className="workflow-review-batch">第 {batchPosition.index} / {batchPosition.total} 张 · 其余待复核 {batchPosition.remaining} 张</span>}
           <p>
             {payload?.image_id ?? reviewId} · 修订 {review?.revision ?? "…"} ·{" "}
             {readOnly ? "已提交人工决定" : dirty ? "未保存修改" : "草稿已保存"}
@@ -672,7 +693,8 @@ export function ArtifactReviewView({
       )}
       {payload && review && (
         <>
-          <section className="panel workflow-form">
+          <details className="panel workflow-form workflow-review-help">
+            <summary>操作说明与导出保存位置</summary>
             {supportsBoxMaskExport && (
               <p>
                 继续在外部编辑时，可直接点击“导出 LabelMe JSON”。JSON
@@ -692,7 +714,7 @@ export function ArtifactReviewView({
               PNG”。
             </p>
             <p>
-              保存标注数据时，先修改并“保存复核草稿”，逐项填写检查意见的裁决和理由，再勾选整图检查并“确认整图并应用”。
+              核对并修改整图标注后，勾选整图检查，再点击“确认整图并应用”。确认时会自动保存修改；LLM 检查建议无需逐项填写结论和理由。
             </p>
             {supportsBoxMaskExport && (
               <p>
@@ -704,24 +726,6 @@ export function ArtifactReviewView({
               <p>
                 返回运行页面，流程完成后点击“下载已确认导出”，保存流程预设格式的标注数据。
               </p>
-            )}
-            {unmappedObjects.length > 0 && (
-              <div>
-                <p>
-                  有 {unmappedObjects.length} 个候选尚未匹配本次类别（
-                  {unmappedObjects
-                    .map((object) => `#${payload.objects.indexOf(object) + 1}`)
-                    .join("、")}
-                  ）。属于目标的候选请选择类别，范围外的候选可拒绝后再保存草稿重新检查。
-                </p>
-                <button
-                  className="button"
-                  disabled={editLocked}
-                  onClick={rejectUnmapped}
-                >
-                  拒绝这 {unmappedObjects.length} 个未归类候选
-                </button>
-              </div>
             )}
             {review.project && review.export_locations ? (
               <section className="workflow-form-section">
@@ -747,35 +751,10 @@ export function ArtifactReviewView({
                 <ExportLocationsPanel />
               </details>
             )}
-          </section>
+          </details>
           <div className="workflow-review-grid">
             <div className="workflow-review-main">
-              <section className="workflow-review-savebar" aria-label="保存补充标注">
-                <div>
-                  <strong>保存补充标注</strong>
-                  <p role="status" aria-live="polite">
-                    {saving
-                      ? "正在保存修改…"
-                      : readOnly
-                        ? "人工决定已保存"
-                        : pendingDrawing
-                          ? "请先完成轮廓或取消本次绘制"
-                          : dirty
-                            ? "有未保存的补画或修改"
-                            : `当前修改已保存至工具 · 修订 ${review.revision}`}
-                  </p>
-                </div>
-                <button
-                  className="button primary"
-                  disabled={editLocked || !dirty}
-                  onClick={() => void save()}
-                >
-                  {saving ? "正在保存…" : "保存修改"}
-                </button>
-                <p className="workflow-review-save-hint">保存后，可从数据集的“继续 LLM 标注复核”重新打开。用于训练前，请完成整图确认。</p>
-                {error && <p className="workflow-review-save-error">{error}</p>}
-              </section>
-              <div className="workflow-actions">
+              <div className="workflow-actions workflow-review-drawing">
                 <label>
                   当前绘制类别
                   <select
@@ -804,12 +783,15 @@ export function ArtifactReviewView({
                 )}
               </div>
               {profile.task_type === "segment" && (
-                <p className="hint">
+                <details className="workflow-review-edit-help">
+                  <summary>补画与修边操作提示</summary>
+                  <p className="hint">
                   补漏时点击“新增漏标对象”，沿边界逐点绘制，再点击“完成轮廓”。
                   修正已有对象时先选中它，再用多边形“补全选中对象”“擦除选中区域”或画笔、橡皮修边。
                   有可编辑顶点的多边形还可拖动顶点调整。SAM 会根据提示重新生成选中对象的轮廓。
                   完成后保存复核草稿，再导出结果。
-                </p>
+                  </p>
+                </details>
               )}
               {profile.task_type === "segment" ? (
                 <MaskReviewCanvas
@@ -909,14 +891,45 @@ export function ArtifactReviewView({
                   />
                 </div>
               )}
-              <ObjectCrop
-                payload={payload}
-                object={selected}
-                region={focusRegion}
-              />
+              <details className="workflow-review-crop" onToggle={(event) => setShowCrop(event.currentTarget.open)}>
+                <summary>查看选中对象或问题的局部放大图</summary>
+                {showCrop && <ObjectCrop payload={payload} object={selected} region={focusRegion} />}
+              </details>
             </div>
-            <aside className="panel workflow-form workflow-review-sidebar">
+            <aside ref={inspector} className="panel workflow-form workflow-review-sidebar" aria-label="复核检查面板">
+              <div className="workflow-review-tabs" role="tablist" aria-label="复核内容">
+                <button className="button" role="tab" id="review-objects-tab" aria-selected={inspectorTab === "objects"} aria-controls="review-objects-panel" tabIndex={inspectorTab === "objects" ? 0 : -1} onClick={() => setInspectorTab("objects")} onKeyDown={(event) => {
+                  if (["ArrowLeft", "ArrowRight", "End"].includes(event.key)) {
+                    event.preventDefault(); setInspectorTab("issues"); document.getElementById("review-issues-tab")?.focus();
+                  }
+                }}>对象 <span>{accepted.length}</span></button>
+                <button className="button" role="tab" id="review-issues-tab" aria-selected={inspectorTab === "issues"} aria-controls="review-issues-panel" tabIndex={inspectorTab === "issues" ? 0 : -1} onClick={() => setInspectorTab("issues")} onKeyDown={(event) => {
+                  if (["ArrowLeft", "ArrowRight", "Home"].includes(event.key)) {
+                    event.preventDefault(); setInspectorTab("objects"); document.getElementById("review-objects-tab")?.focus();
+                  }
+                }}>检查问题 <span>{payload.issues.length}</span></button>
+              </div>
+              <div id="review-objects-panel" className="workflow-review-panel" role="tabpanel" aria-labelledby="review-objects-tab" hidden={inspectorTab !== "objects"} tabIndex={0}>
               <h2>对象与来源 · {accepted.length} 个候选对象</h2>
+            {unmappedObjects.length > 0 && (
+              <details className="workflow-review-unmapped">
+                <summary>{unmappedObjects.length} 个候选尚未归类</summary>
+                <p>
+                  有 {unmappedObjects.length} 个候选尚未匹配本次类别（
+                  {unmappedObjects
+                    .map((object) => `#${payload.objects.indexOf(object) + 1}`)
+                    .join("、")}
+                  ）。属于目标的候选请选择类别，范围外的候选可拒绝后再保存草稿重新检查。
+                </p>
+                <button
+                  className="button"
+                  disabled={editLocked}
+                  onClick={rejectUnmapped}
+                >
+                  拒绝这 {unmappedObjects.length} 个未归类候选
+                </button>
+              </details>
+            )}
               {payload.objects.map((object, index) => (
                 <article
                   key={object.object_id}
@@ -1000,14 +1013,18 @@ export function ArtifactReviewView({
               {!payload.objects.length && (
                 <p>没有候选仍需完整检查原图，补充漏标或明确确认无目标。</p>
               )}
-              <h2>检查问题</h2>
+              </div>
+              <div id="review-issues-panel" className="workflow-review-panel" role="tabpanel" aria-labelledby="review-issues-tab" hidden={inspectorTab !== "issues"} tabIndex={0}>
+              <h2>检查问题 · {payload.issues.length} 项</h2>
+              {blocking && <p className="validation invalid">有 {blockingIssues.length} 项标注问题需要修正。修改对象后点击“保存修改”，系统会重新检查。</p>}
+              {advisoryIssues.length > 0 && <p className="hint">LLM 检查建议仅供参考。核对整图后即可确认，无需逐项填写结论和理由。</p>}
               {!readOnly && unresolvedIssues.length > 0 && (
                 <details>
                   <summary>
-                    批量填写检查结论（{unresolvedIssues.length} 项）
+                    批量记录处理说明（选填，{unresolvedIssues.length} 项）
                   </summary>
                   <p>
-                    请先核对以下各项，再选择共同结论并填写你实际核对的理由。
+                    仅在需要留存处理记录时填写。共同结论只用于列出的建议，不会自动确认整图。
                   </p>
                   <ol>
                     {unresolvedIssues.map((issue) => (
@@ -1050,6 +1067,7 @@ export function ArtifactReviewView({
                 </details>
               )}
               {payload.issues.map((issue, index) => {
+                const objectIndex = payload.objects.findIndex((object) => object.object_id === issue.object_id);
                 const unmappedClass =
                   issue.type === "unmapped_class" ||
                   issue.message ===
@@ -1074,7 +1092,7 @@ export function ArtifactReviewView({
                     </button>
                     <p>
                       {unmappedClass
-                        ? "该候选尚未匹配到任务类别。请选择已配置类别，或拒绝该候选后保存草稿。"
+                        ? `${objectIndex >= 0 ? `对象 #${objectIndex + 1}` : "当前标注"} — 类别尚未确定。请选择已配置类别，或拒绝该候选后保存草稿。`
                         : issue.message}
                     </p>
                     {issue.type === "coordinate_error" && (
@@ -1092,7 +1110,8 @@ export function ArtifactReviewView({
                       </p>
                     )}
                     {!issue.blocking && issue.severity !== "error" && (
-                      <>
+                      <details className="workflow-issue-optional-note">
+                        <summary>补充处理记录（选填）</summary>
                         <select
                           aria-label={`问题 ${index + 1} 裁决`}
                           disabled={editLocked}
@@ -1108,14 +1127,14 @@ export function ArtifactReviewView({
                             })
                           }
                         >
-                          <option value="">待人工裁决</option>
+                          <option value="">未记录（不影响确认）</option>
                           <option value="resolved">已核对并修正</option>
                           <option value="dismissed">核对后认为可接受</option>
                         </select>
                         <textarea
                           aria-label={`问题 ${index + 1} 理由`}
                           disabled={editLocked}
-                          placeholder="当前修订的证据和理由"
+                          placeholder="可选：记录对这条建议的处理"
                           value={issue.reason ?? ""}
                           onChange={(event) =>
                             change({
@@ -1128,7 +1147,7 @@ export function ArtifactReviewView({
                             })
                           }
                         />
-                      </>
+                      </details>
                     )}
                   </article>
                 );
@@ -1136,123 +1155,70 @@ export function ArtifactReviewView({
               {!payload.issues.length && (
                 <p>当前未列出问题，仍需人工检查整图覆盖。</p>
               )}
+              </div>
             </aside>
           </div>
-          {!readOnly && (
-            <section className="panel workflow-form">
-              <h2>整图决定</h2>
-              <label className="workflow-check">
-                <input
-                  type="checkbox"
-                  checked={coverage}
-                  disabled={busy || pendingDrawing}
-                  onChange={(event) => setCoverage(event.target.checked)}
-                />
-                我已检查全图、对象类别与边界、漏标和有效监督范围，并完成当前修订的问题裁决
-              </label>
-              <label>
-                复核说明或排除理由
-                <textarea
-                  value={reason}
-                  disabled={busy || pendingDrawing}
-                  onChange={(event) => setReason(event.target.value)}
-                />
-              </label>
-              {blocking && (
-                <div className="validation invalid">
-                  <p>
-                    以下 {blockingIssues.length}{" "}
-                    项需要修正后才能确认整图。修改或拒绝对应对象，再点击“保存复核草稿”，系统会重新检查。
-                  </p>
-                  <ul>
-                    {blockingIssues.map((issue, index) => {
-                      const objectIndex = payload.objects.findIndex(
-                        (object) => object.object_id === issue.object_id,
-                      );
-                      const unmapped =
-                        issue.type === "unmapped_class" ||
-                        issue.message ===
-                          "Candidate class is not mapped to the task profile.";
-                      return (
-                        <li key={issue.id ?? index}>
-                          {objectIndex >= 0
-                            ? `对象 #${objectIndex + 1}`
-                            : "当前标注"}{" "}
-                          —{" "}
-                          {unmapped
-                            ? "类别尚未确定。请选择本次类别，或对范围外的候选点击“拒绝对象”后保存草稿。"
-                            : issue.message ||
-                              issue.evidence ||
-                              issueLabels[issue.type ?? ""] ||
-                              "请核对标注格式。"}
-                        </li>
-                      );
-                    })}
-                  </ul>
-                </div>
-              )}
-              {unresolved && <p>请填写每个语义问题的裁决和理由。</p>}
-              {supportsBoxMaskExport && (
-                <div>
-                  <p>也可以先导出当前 LabelMe JSON 草稿，在外部继续编辑。</p>
-                  <button
-                    className="button"
-                    disabled={busy || pendingDrawing || !payload}
-                    onClick={() => void exportLabelMe()}
-                  >
-                    直接导出 LabelMe JSON 草稿
-                  </button>
-                </div>
-              )}
+          <section className="workflow-review-dock" aria-label="整图确认与保存">
+            <section className="workflow-review-savebar" aria-label="保存补充标注">
+              <p role="status" aria-live="polite">
+                {saving ? "正在保存修改…" : readOnly ? "人工决定已保存" : pendingDrawing
+                  ? "请先完成轮廓或取消本次绘制" : dirty ? "有未保存的补画或修改"
+                    : `当前修改已保存至工具 · 修订 ${review.revision}`}
+              </p>
               <div className="workflow-actions">
-                <button
-                  className="button primary"
-                  disabled={
-                    busy || pendingDrawing ||
-                    !coverage ||
-                    blocking ||
-                    unresolved ||
-                    !accepted.length
-                  }
-                  onClick={() => void decide("approved")}
-                >
-                  确认整图并应用
-                </button>
-                {profile.task_type !== "classify" && (
-                  <button
-                    className="button"
-                    disabled={
-                      busy || pendingDrawing ||
-                      !coverage ||
-                      blocking ||
-                      unresolved ||
-                      !!accepted.length
-                    }
-                    onClick={() => void decide("background")}
-                  >
-                    确认无目标
+                {!readOnly && (blocking || advisoryIssues.length > 0) && (
+                  <button className="button workflow-review-issues-link" onClick={() => {
+                    setInspectorTab("issues");
+                    inspector.current?.scrollIntoView({ block: "nearest" });
+                    document.getElementById("review-issues-tab")?.focus({ preventScroll: true });
+                  }}>
+                    {blocking ? `处理 ${blockingIssues.length} 项标注问题` : `查看 ${advisoryIssues.length} 条 LLM 建议（选看）`}
                   </button>
                 )}
-                <button
-                  className="button"
-                  disabled={busy || pendingDrawing || !reason.trim()}
-                  onClick={() => void decide("rejected")}
-                >
-                  拒绝并保留阻塞
+                <button className="button" disabled={editLocked || !dirty} onClick={() => void save()}>
+                  {saving ? "正在保存…" : "保存修改"}
                 </button>
-                <button
-                  className="button danger"
-                  disabled={busy || pendingDrawing || !reason.trim()}
-                  onClick={() => void decide("excluded")}
-                >
-                  按理由排除此图
-                </button>
+                {onNext && <button className="button" disabled={busy || pendingDrawing} onClick={() => requestLeave(onNext)}>下一张待复核 →</button>}
               </div>
-              <p className="hint">
-                应用正式标签与审核回执在同一事务完成。单图确认后，批次仍等待其余纳入图片。
-              </p>
+              {error && <p className="workflow-review-save-error" role="alert">{error}</p>}
             </section>
-          )}
+            {!readOnly && (
+              <div className="workflow-review-decision">
+                <p id="review-confirmation-help" className="workflow-review-confirmation-help" role="status">{confirmationHint}</p>
+                <label className="workflow-check" title="我已检查全图、对象类别与边界、漏标和有效监督范围">
+                  <input type="checkbox" checked={coverage} disabled={busy || pendingDrawing} onChange={(event) => setCoverage(event.target.checked)} />
+                  我已检查整图标注、类别、边界与漏标
+                </label>
+                <div className="workflow-actions">
+                  <details className="workflow-review-more">
+                    <summary className="button">说明与其他操作</summary>
+                    <div className="workflow-review-more-panel workflow-form">
+                      <label>复核说明或排除理由
+                        <textarea value={reason} disabled={busy || pendingDrawing} onChange={(event) => setReason(event.target.value)} />
+                      </label>
+                      <p className="hint">确认后，正式标注同步到数据集。未确认的修改可先保存草稿。</p>
+                      {advisoryIssues.length > 0 && <p>LLM 建议无需填写处理记录，不影响整图确认。</p>}
+                      {supportsBoxMaskExport && (
+                        <button className="button" disabled={busy || pendingDrawing || !payload} onClick={() => void exportLabelMe()}>直接导出 LabelMe JSON 草稿</button>
+                      )}
+                      <div className="workflow-actions">
+                        <button className="button" disabled={busy || pendingDrawing || !reason.trim()} onClick={() => void decide("rejected")}>拒绝并保留阻塞</button>
+                        <button className="button danger" disabled={busy || pendingDrawing || !reason.trim()} onClick={() => void decide("excluded")}>按理由排除此图</button>
+                      </div>
+                    </div>
+                  </details>
+                  {profile.task_type !== "classify" && (
+                    <button className="button" aria-describedby="review-confirmation-help" disabled={busy || pendingDrawing || !coverage || blocking || !!accepted.length} onClick={() => void decide("background", !!onNext)}>
+                      {onNext ? "确认无目标并下一张" : "确认无目标"}
+                    </button>
+                  )}
+                  <button className="button primary" aria-describedby="review-confirmation-help" disabled={busy || pendingDrawing || !coverage || blocking || !accepted.length} onClick={() => void decide("approved", !!onNext)}>
+                    {onNext ? "确认并下一张" : "确认整图并应用"}
+                  </button>
+                </div>
+              </div>
+            )}
+          </section>
         </>
       )}
     </main>

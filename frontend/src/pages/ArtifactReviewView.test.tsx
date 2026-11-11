@@ -198,7 +198,7 @@ const button = (label: string) =>
   Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
     (item) => item.textContent === label,
   )!;
-const render = async (taskProfile = profile, onDirtyChange?: (dirty: boolean) => void) => {
+const render = async (taskProfile = profile, onDirtyChange?: (dirty: boolean) => void, onNext?: () => void) => {
   await act(async () =>
     root.render(
       <ArtifactReviewView
@@ -207,12 +207,109 @@ const render = async (taskProfile = profile, onDirtyChange?: (dirty: boolean) =>
         onBack={vi.fn()}
         onSaved={vi.fn()}
         onDirtyChange={onDirtyChange}
+        onNext={onNext}
       />,
     ),
   );
 };
 
 describe("human review gate", () => {
+  it("confirms a checked image without filling six advisory conclusions or inventing resolutions", async () => {
+    const issues = Array.from({ length: 6 }, (_, index) => ({ id: `issue-${index}`, type: "boundary", message: `检查边界 ${index + 1}` }));
+    vi.mocked(workflowApi.review).mockResolvedValue({ ...review, payload: { ...payload, issues } });
+    await render();
+    expect(button("确认整图并应用").disabled).toBe(true);
+    act(() => container.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click());
+    expect(button("确认整图并应用").disabled).toBe(false);
+    expect(container.querySelector("#review-confirmation-help")?.textContent).toContain("无需填写");
+    await act(async () => button("确认整图并应用").click());
+    expect(workflowApi.decide).toHaveBeenCalledWith("review-1", 1, "approved", "", {});
+    expect(workflowApi.saveDraft).not.toHaveBeenCalled();
+    expect(issues.every((issue) => !("resolution" in issue))).toBe(true);
+  });
+
+  it("keeps malformed annotations blocking even after whole-image acknowledgement", async () => {
+    vi.mocked(workflowApi.review).mockResolvedValue({ ...review, payload: { ...payload, issues: [{ id: "geometry", type: "invalid_geometry", blocking: true, message: "轮廓无效" }] } });
+    await render();
+    act(() => container.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click());
+    expect(button("确认整图并应用").disabled).toBe(true);
+    expect(container.querySelector("#review-confirmation-help")?.textContent).toContain("1 项标注问题");
+    expect(workflowApi.decide).not.toHaveBeenCalled();
+  });
+
+  it("allows explicit no-target confirmation without recording advisory conclusions", async () => {
+    vi.mocked(workflowApi.review).mockResolvedValue({ ...review, payload: { ...payload, objects: [], issues: [{ id: "uncertain", type: "uncertain", message: "可能存在目标" }] } });
+    await render();
+    act(() => container.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click());
+    expect(button("确认整图并应用").disabled).toBe(true);
+    expect(button("确认无目标").disabled).toBe(false);
+    await act(async () => button("确认无目标").click());
+    expect(workflowApi.decide).toHaveBeenCalledWith("review-1", 1, "background", "", {});
+  });
+
+  it("keeps issue edits and the confirmation gate when switching inspector tabs", async () => {
+    vi.mocked(workflowApi.review).mockResolvedValue({ ...review, payload: { ...payload, issues: [{ id: "boundary", type: "boundary", message: "核对边界" }] } });
+    await render();
+    expect(container.querySelector<HTMLElement>("#review-issues-panel")!.hidden).toBe(true);
+    act(() => container.querySelector<HTMLButtonElement>("#review-issues-tab")!.click());
+    expect(container.querySelector<HTMLElement>("#review-objects-panel")!.hidden).toBe(true);
+    const resolution = container.querySelector<HTMLSelectElement>('[aria-label="问题 1 裁决"]')!;
+    act(() => {
+      resolution.value = "resolved";
+      resolution.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    act(() => container.querySelector<HTMLButtonElement>("#review-objects-tab")!.click());
+    act(() => container.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click());
+    expect(button("确认整图并应用").disabled).toBe(false);
+    act(() => container.querySelector<HTMLButtonElement>("#review-issues-tab")!.click());
+    expect(resolution.value).toBe("resolved");
+    expect(container.querySelector('[aria-label="保存补充标注"]')?.textContent).toContain("有未保存");
+    expect(workflowApi.decide).not.toHaveBeenCalled();
+  });
+
+  it("saves edits and advances only after confirmation succeeds", async () => {
+    const onNext = vi.fn();
+    let finish!: (value: WorkflowReview) => void;
+    vi.mocked(workflowApi.decide).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    await render(profile, undefined, onNext);
+    expect(button("确认并下一张").disabled).toBe(true);
+    act(() => button("修改框和类别").click());
+    act(() => container.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click());
+    await act(async () => button("确认并下一张").click());
+    expect(workflowApi.decide).toHaveBeenCalledWith("review-1", 2, "approved", "", {});
+    expect(onNext).not.toHaveBeenCalled();
+    expect(button("下一张待复核 →").disabled).toBe(true);
+    await act(async () => finish({ ...review, status: "decided", decision: "approved" }));
+    expect(onNext).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["save", "confirm"])("stays on the current image when %s fails", async (failure) => {
+    const onNext = vi.fn();
+    if (failure === "save") vi.mocked(workflowApi.saveDraft).mockRejectedValueOnce(new Error("保存冲突"));
+    else vi.mocked(workflowApi.decide).mockRejectedValueOnce(new Error("确认冲突"));
+    await render(profile, undefined, onNext);
+    act(() => button("修改框和类别").click());
+    act(() => container.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click());
+    await act(async () => button("确认并下一张").click());
+    expect(onNext).not.toHaveBeenCalled();
+    expect(container.querySelector('[aria-label="保存补充标注"]')?.textContent).toContain("冲突");
+    expect(container.querySelector<HTMLSelectElement>('[aria-label="对象 1 类别"]')!.value).toBe("class-2");
+  });
+
+  it("protects unsaved edits when skipping to the next image", async () => {
+    const onNext = vi.fn();
+    await render(profile, undefined, onNext);
+    act(() => button("修改框和类别").click());
+    act(() => button("下一张待复核 →").click());
+    expect(onNext).not.toHaveBeenCalled();
+    expect(container.querySelector('[role="alertdialog"]')).not.toBeNull();
+    act(() => button("继续编辑").click());
+    expect(onNext).not.toHaveBeenCalled();
+    await act(async () => button("保存修改").click());
+    act(() => button("下一张待复核 →").click());
+    expect(onNext).toHaveBeenCalledTimes(1);
+  });
+
   it("starts drawing a missing object without adding an empty candidate", async () => {
     await render(segmentProfile);
     act(() => button("新增漏标对象").click());
@@ -468,7 +565,7 @@ describe("human review gate", () => {
     const explanation = form.querySelector<HTMLTextAreaElement>(
       '[name="explanation"]',
     )!;
-    expect(container.textContent).toContain("批量填写检查结论（2 项）");
+    expect(container.textContent).toContain("批量记录处理说明（选填，2 项）");
     resolution.value = "dismissed";
     act(() =>
       form.dispatchEvent(

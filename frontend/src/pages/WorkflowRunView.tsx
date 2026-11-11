@@ -129,6 +129,19 @@ export function WorkflowRunView({
       setBusy(false);
     }
   };
+  const latestReviews = new Map(
+    run?.reviews.map((review) => [review.item_id, review]),
+  );
+  const pendingReviewItems = run?.items.filter((item) => {
+    const review = latestReviews.get(item.id);
+    return review && !["approved", "background", "excluded", "decided"].includes(review.status);
+  }) ?? [];
+  const currentItemId = run?.reviews.find((review) => review.id === reviewId)?.item_id;
+  const currentIndex = run?.items.findIndex((item) => item.id === currentItemId) ?? -1;
+  const remainingReviews = pendingReviewItems.filter((item) => item.id !== currentItemId);
+  const remainingItemIds = new Set(remainingReviews.map((item) => item.id));
+  const nextItem = run?.items.find((item, index) => index > currentIndex && remainingItemIds.has(item.id)) ?? remainingReviews[0];
+  const nextReviewId = nextItem ? latestReviews.get(nextItem.id)?.id : undefined;
   if (reviewId && run)
     return (
       <ArtifactReviewView
@@ -136,11 +149,14 @@ export function WorkflowRunView({
         reviewId={reviewId}
         profile={runProfile(run)}
         onDirtyChange={onDirtyChange}
+        batchPosition={currentIndex >= 0 ? { index: currentIndex + 1, total: run.items.length, remaining: remainingReviews.length } : undefined}
+        onNext={nextReviewId ? () => setReviewId(nextReviewId) : undefined}
         onBack={() => {
           setReviewId("");
           void refresh().catch((reason) => setError(String(reason)));
         }}
-        onSaved={() => {
+        onSaved={(saved) => {
+          if (saved) setRun((current) => current ? { ...current, reviews: current.reviews.map((review) => review.id === saved.id ? { ...review, status: saved.status, revision: saved.revision } : review) } : current);
           onDataChanged?.();
           void refresh().catch((reason) => setError(String(reason)));
         }}
@@ -162,16 +178,7 @@ export function WorkflowRunView({
     typeof run?.context.dataset_id === "string"
       ? run.context.dataset_id
       : undefined;
-  const latestReviews = new Map(
-    run?.reviews.map((review) => [review.item_id, review]),
-  );
-  const nextReviewItem = run?.items.find((item) => {
-    const review = latestReviews.get(item.id);
-    return (
-      review &&
-      !["approved", "background", "excluded", "decided"].includes(review.status)
-    );
-  });
+  const nextReviewItem = pendingReviewItems[0];
   const nextReview = nextReviewItem
     ? latestReviews.get(nextReviewItem.id)
     : undefined;

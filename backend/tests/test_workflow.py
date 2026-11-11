@@ -454,7 +454,7 @@ def test_router_contract_arrays_and_review_endpoints(workflow):
         assert response.json()["receipt"]["image_id"] == review["payload"]["image_id"]
 
 
-def test_save_review_clears_fixed_geometry_and_requires_semantic_resolution(workflow):
+def test_save_review_clears_fixed_geometry_and_retains_optional_semantic_notes(workflow):
     service = workflow[0]
     proposer = service.bindings.handlers["vision_propose"]
 
@@ -474,8 +474,6 @@ def test_save_review_clears_fixed_geometry_and_requires_semantic_resolution(work
     fixed = service.save_review(review["id"], ReviewDraft(expected_revision=1, payload={"annotations": annotations}))
     assert not any(issue.get("blocking") for issue in fixed["payload"]["issues"])
     assert any(issue["id"] == semantic_id for issue in fixed["payload"]["issues"])
-    with pytest.raises(ValidationError, match="decision for each"):
-        approve(service, fixed)
     service.decide_review(review["id"], ReviewDecision(expected_revision=2, decision="approved",
         semantic_resolutions={semantic_id: "The visible object matches the configured component definition."}))
 

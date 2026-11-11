@@ -144,12 +144,45 @@ afterEach(() => {
   act(() => root.unmount());
   container.remove();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true;
 
 describe("manual mask review gestures", () => {
+  it.each(["60px", "none"])("fits a viewport with max-height %s while preserving original-pixel geometry", async (maxHeight) => {
+    let availableWidth = 50;
+    let resized!: () => void;
+    const disconnect = vi.fn();
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(callback: () => void) { resized = callback; }
+      observe() { resized(); }
+      disconnect = disconnect;
+    });
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(() => availableWidth);
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(60);
+    vi.spyOn(window, "getComputedStyle").mockReturnValue({ maxHeight } as CSSStyleDeclaration);
+    await render("first", 1);
+    const stage = container.querySelector<HTMLElement>(".workflow-mask-stage")!;
+    expect(stage.style.width).toBe("48px");
+    expect(canvas().width).toBe(100);
+    vi.mocked(canvas().getBoundingClientRect).mockReturnValue({ left: 10, top: 20, width: 48, height: 48 } as DOMRect);
+    for (const [x, y] of [[10, 10], [70, 10], [70, 70]]) {
+      for (const type of ["pointerdown", "pointerup"]) act(() => canvas().dispatchEvent(new MouseEvent(type, { bubbles: true, button: 0, clientX: 10 + x * .48, clientY: 20 + y * .48 })));
+    }
+    act(() => button("完成轮廓").click());
+    const added = (onChange.mock.calls[0][0] as ReviewPayload).objects[1];
+    expect(added.polygon).toHaveLength(3);
+    [[10, 10], [70, 10], [70, 70]].forEach((point, index) => point.forEach((value, axis) => expect(added.polygon![index][axis]).toBeCloseTo(value)));
+    expect(added.mask?.size).toEqual([100, 100]);
+    availableWidth = 80;
+    act(() => resized());
+    expect(Number.parseFloat(stage.style.width)).toBeCloseTo(58);
+    expect(onChange).toHaveBeenCalledTimes(1);
+    act(() => root.unmount());
+    expect(disconnect).toHaveBeenCalledTimes(1);
+  });
   it("creates an object only after completing original-pixel polygon coordinates", async () => {
     await render("first", 1);
     expect(button("多边形").getAttribute("aria-pressed")).toBe("true");

@@ -66,6 +66,8 @@ export function MaskReviewCanvas({
   canRedo?: boolean;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const [fitSize, setFitSize] = useState({ width: 850, height: 600 });
   const painting = useRef<Uint8Array>();
   const previousPoint = useRef<[number, number]>();
   const boxStart = useRef<[number, number]>();
@@ -138,7 +140,21 @@ export function MaskReviewCanvas({
     width,
     height,
   ]);
-  const scale = Math.min(850 / width, 600 / height, 1) * zoom;
+  useEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport || typeof ResizeObserver === "undefined") return;
+    const measure = () => {
+      const maxHeight = Number.parseFloat(getComputedStyle(viewport).maxHeight);
+      const next = { width: Math.max(1, viewport.clientWidth - 2), height: Math.max(1, (Number.isFinite(maxHeight) ? maxHeight : viewport.clientHeight || 600) - 2) };
+      setFitSize((current) => current.width === next.width && current.height === next.height ? current : next);
+    };
+    const observer = new ResizeObserver(measure);
+    observer.observe(viewport);
+    window.addEventListener("resize", measure);
+    measure();
+    return () => { observer.disconnect(); window.removeEventListener("resize", measure); };
+  }, []);
+  const scale = Math.min(fitSize.width / width, fitSize.height / height, 1) * zoom;
   const imageUrl = payload.image_url.startsWith("http")
     ? payload.image_url
     : apiUrl(payload.image_url);
@@ -805,7 +821,7 @@ export function MaskReviewCanvas({
           </label>
         ))}
       </div>
-      <div className="workflow-canvas-scroll">
+      <div className="workflow-canvas-scroll" ref={viewportRef}>
         <div
           className="workflow-mask-stage"
           style={{ width: width * scale, height: height * scale }}
