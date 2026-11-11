@@ -48,6 +48,8 @@ export interface ProfileClassRule {
   color?: string;
 }
 
+export type SegmentationSource = "vision_llm" | "sam";
+
 export interface TaskProfileConfig {
   task_type: TaskType;
   geometry: "bbox" | "mask" | "obb" | "classify";

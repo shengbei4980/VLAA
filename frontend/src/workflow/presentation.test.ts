@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   nodeLabel,
+  nodeDescription,
   templateGuide,
   templateTitle,
   workflowError,
@@ -51,6 +52,8 @@ describe("Chinese workflow presentation", () => {
     expect(workflowStatus("awaiting_review")).toBe("等待你检查标注");
     expect(nodeLabel("future_node")).toBe("扩展处理步骤");
     expect(workflowStatus("future_status")).toBe("待查看");
+    expect(nodeLabel("segment_proposals")).toBe("生成或整理目标轮廓");
+    expect(nodeDescription("segment_proposals")).not.toContain("分割模型根据提示");
   });
 
   it("keeps preparation instructions specific to the selected task", () => {

@@ -15,7 +15,6 @@ function emptyEndpoint(): VisionEndpoint {
     auth_scheme: "bearer",
     auth_header_name: "",
     coordinate_format: "pixel",
-    max_image_side: 1024,
     max_output_tokens: 4096,
     timeout_seconds: 60,
     multi_image: false,
@@ -136,6 +135,9 @@ export function VisionSettingsPanel() {
         首次使用，请为两个角色填写支持图片输入的模型名称、API Base URL 和所需的
         API Key，
         启用角色后保存。随后可测试图片与坐标，再到工作流中选择图片开始标注。已配置的密钥留空可保留。
+      </p>
+      <p className="settings-hint">
+        图片按原图尺寸发送，标注按原图坐标解析；工具不再按边长缩小发送副本。
       </p>
       {error && (
         <p role="alert" className="validation invalid">
@@ -276,24 +278,6 @@ export function VisionSettingsPanel() {
                     </select>
                     <small>
                       用于解释模型返回的位置框，请与模型服务的坐标格式保持一致。
-                    </small>
-                  </label>
-                  <label>
-                    最大图像边长
-                    <input
-                      type="number"
-                      min="64"
-                      max="4096"
-                      value={endpoint.max_image_side}
-                      onChange={(event) =>
-                        update(role, {
-                          max_image_side: Number(event.target.value),
-                        })
-                      }
-                    />
-                    <small>
-                      仅缩小超过此边长的发送副本。2301×1955 的图片设为 2301
-                      或以上即可按原尺寸发送。两个角色分别设置。
                     </small>
                   </label>
                   <label>

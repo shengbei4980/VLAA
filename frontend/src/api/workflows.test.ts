@@ -4,6 +4,16 @@ import { visionApi, type VisionEndpoint } from "./vision";
 
 afterEach(() => vi.unstubAllGlobals());
 describe("workflow HTTP contracts", () => {
+  it("requests a manual revision of the confirmed review without rerunning a model", async () => {
+    const fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ id: "new-review", run_id: "manual-run" }) });
+    vi.stubGlobal("fetch", fetch);
+    const result = await workflowApi.continueEditing("review/one", 3);
+    expect(result).toEqual({ id: "new-review", run_id: "manual-run" });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch.mock.calls[0][0]).toContain("/api/workflows/reviews/review%2Fone/continue-editing");
+    expect(fetch.mock.calls[0][1].method).toBe("POST");
+    expect(JSON.parse(fetch.mock.calls[0][1].body)).toEqual({ expected_revision: 3 });
+  });
   it("polls lightweight summaries instead of downloading annotation payloads", async () => {
     const fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) });
     vi.stubGlobal("fetch", fetch);
@@ -66,12 +76,12 @@ describe("workflow HTTP contracts", () => {
     expect(fetch.mock.calls[0][1].method).toBe("PUT");
     expect(JSON.parse(fetch.mock.calls[0][1].body).expected_revision).toBe(1);
   });
-  it("keeps secret-status and config fingerprints out of settings writes", async () => {
+  it("keeps secret-status, fingerprints and legacy image limits out of settings writes", async () => {
     const fetch = vi
       .fn()
       .mockResolvedValue({ ok: true, json: async () => ({}) });
     vi.stubGlobal("fetch", fetch);
-    const endpoint: VisionEndpoint = {
+    const endpoint: VisionEndpoint & { max_image_side: number } = {
       enabled: false,
       mode: "local",
       api_base: "http://127.0.0.1:8001/v1",
@@ -92,6 +102,8 @@ describe("workflow HTTP contracts", () => {
     expect(body.proposer.api_key_configured).toBeUndefined();
     expect(body.proposer.config_hash).toBeUndefined();
     expect(body.proposer.api_key).toBeUndefined();
+    expect(body.proposer.max_image_side).toBeUndefined();
+    expect(body.reviewer.max_image_side).toBeUndefined();
     expect(body.proposer.model).toBe("vision");
   });
 });

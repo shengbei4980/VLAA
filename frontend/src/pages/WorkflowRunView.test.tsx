@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { WorkflowRunView } from "./WorkflowRunView";
 import { workflowApi } from "../api/workflows";
 import type { WorkflowRun, WorkflowReview } from "../types/workflows";
+const { artifactProps } = vi.hoisted(() => ({ artifactProps: vi.fn() }));
 vi.mock("../api/workflows", () => ({
   workflowApi: {
     run: vi.fn(),
@@ -14,17 +15,42 @@ vi.mock("../api/workflows", () => ({
   },
 }));
 vi.mock("./ArtifactReviewView", () => ({
-  ArtifactReviewView: ({ reviewId, onSaved, onNext, batchPosition }: { reviewId: string; onSaved: (saved?: WorkflowReview) => void; onNext?: () => void; batchPosition?: { index: number; total: number; remaining: number } }) => (
+  ArtifactReviewView: (props: { reviewId: string; onSaved: (saved?: WorkflowReview) => void; onNext?: () => void; onOpenRevision?: (value: WorkflowReview) => void; onEditImage?: (datasetId: string, imageId: string) => void; batchPosition?: { index: number; total: number; remaining: number } }) => {
+    artifactProps(props);
+    const { reviewId, onSaved, onNext, batchPosition } = props;
+    return (
     <div>复核 {reviewId}<button onClick={() => onSaved()}>保存并同步</button>
       {batchPosition && <p>第 {batchPosition.index} / {batchPosition.total} 张 · 其余 {batchPosition.remaining}</p>}
       {onNext && <button onClick={() => { onSaved({ id: reviewId, revision: 2, status: "decided" } as WorkflowReview); onNext(); }}>测试确认并继续</button>}
     </div>
-  ),
+    );
+  },
 }));
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true;
 describe("batch review barrier", () => {
+  it("hands new revisions to workflow navigation and keeps the dataset editor callback", async () => {
+    vi.clearAllMocks();
+    vi.mocked(workflowApi.run).mockResolvedValue({
+      id: "run-old", status: "completed", profile_snapshot: {}, template_snapshot: { nodes: [] },
+      context: {}, items: [], attempts: [], artifacts: [], reviews: [], events: [], batch_counts: {},
+    } as unknown as WorkflowRun);
+    const open = vi.fn();
+    const edit = vi.fn();
+    const changed = vi.fn();
+    const root = createRoot(document.createElement("div"));
+    try {
+      await act(async () => root.render(<WorkflowRunView runId="run-old" initialReviewId="review-old" onOpenReviewRevision={open} onEditImage={edit} onDataChanged={changed} onBack={vi.fn()} onOpenTraining={vi.fn()} onOpenModel={vi.fn()} />));
+      const props = artifactProps.mock.lastCall![0] as { onOpenRevision: (review: WorkflowReview) => void; onEditImage: typeof edit };
+      const next = { id: "review-next", run_id: "run-next" } as WorkflowReview;
+      act(() => props.onOpenRevision(next));
+      expect(open).toHaveBeenCalledWith(next);
+      expect(changed).toHaveBeenCalledOnce();
+      expect(props.onEditImage).toBe(edit);
+      expect(workflowApi.run).toHaveBeenCalledOnce();
+    } finally { act(() => root.unmount()); }
+  });
   it("continues in image order, skips finished reviews and wraps to earlier pending images", async () => {
     vi.clearAllMocks();
     const run = {

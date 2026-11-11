@@ -1,4 +1,7 @@
-import type { WorkflowTemplate } from "../types/workflows";
+import type { TaskProfileConfig, WorkflowTemplate } from "../types/workflows";
+
+export const segmentationSourceLabel = (config: TaskProfileConfig) =>
+  config.models.segmenter === "vision_llm" ? "视觉 LLM 直接画轮廓" : "视觉 LLM 定位 + SAM 分割";
 
 const nodeText: Record<string, { title: string; description: string }> = {
   vision_propose: {
@@ -11,8 +14,8 @@ const nodeText: Record<string, { title: string; description: string }> = {
     description: "使用已登记的模型生成标注草稿。",
   },
   segment_proposals: {
-    title: "生成目标轮廓",
-    description: "分割模型根据提示生成每个对象的轮廓。",
+    title: "生成或整理目标轮廓",
+    description: "按所选轮廓来源整理对象的多边形与掩膜。",
   },
   validate_proposals: {
     title: "检查标注格式",
@@ -85,7 +88,7 @@ const guides: Record<
     legacyNames: [],
     purpose: "我想让看图大模型按类别说明，直接给图片生成标注草稿。",
     preparation:
-      "准备检测或分割图片与类别，在“视觉模型设置”中配置标注建议者和独立检查者。分割任务还需配置 SAM 生成轮廓。",
+      "准备检测或分割图片与类别，在“视觉模型接入”中配置标注建议者和独立检查者。分割任务可选 LLM 直接画轮廓，或定位后由 SAM 分割。",
     result: "得到经过视觉检查、可供人工修改确认并导出的标注。",
   },
   confirmed_train_evaluate_v1: {
@@ -100,7 +103,7 @@ const guides: Record<
     legacyNames: ["视觉标注、训练与迭代"],
     purpose: "我想从预标注开始，连续完成检查、训练和下一批处理。",
     preparation:
-      "适用于检测和分割。先配置视觉检查服务，可用已有模型或视觉服务生成建议，分割任务还需分割模型。",
+      "适用于检测和分割。先配置视觉检查服务，可用已有模型或视觉服务生成建议；分割任务可选直接生成轮廓或使用 SAM。",
     result: "得到已确认标注、训练模型和评估结果。",
   },
 };

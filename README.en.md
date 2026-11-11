@@ -19,7 +19,7 @@ Reusable class and model profiles support different subjects, such as tower comp
 - Project-root output directories, per-run folders, training/evaluation artifacts, and reusable profiles.
 - Workflow history deletion and restoration. Active work must be cancelled before its history entry is removed.
 
-LLM checks do not guarantee correct labels. Review the entire image, repair errors, and confirm the result before using it for training. Segmentation workflows use the configured SAM model to produce object contours from proposals.
+LLM checks do not guarantee correct labels. Review the entire image, repair errors, and confirm the result before using it for training. Segmentation profiles can use direct vision-LLM polygons or LLM boxes followed by SAM. Direct polygon mode does not call SAM and requires a vision service that can return valid polygon coordinates.
 
 ## Install and launch on Windows
 
@@ -42,7 +42,7 @@ The installer creates or reuses `.venv`, installs `backend/requirements.txt`, an
 ## First workflow
 
 1. In **Settings → Vision model access**, configure and enable both the proposer and the independent reviewer. Choose remote API or local HTTP, enter the model name, API Base URL, and any required API key. Save and test the image/coordinate contract.
-2. For segmentation, configure an existing local SAM weight file in **SAM assistance**. A review-only fallback cannot supply authoritative workflow masks.
+2. For segmentation, choose the contour source in the task profile. Direct vision-LLM polygons need no SAM weights. For LLM boxes followed by SAM, configure an existing local SAM weight file in **SAM assistance**; a review-only fallback cannot supply authoritative workflow masks.
 3. Open the generic image workflow and choose **Annotate and check with a vision LLM**.
 4. Select images; create a class/model profile, add the intended classes and instructions, and select a project root.
 5. Preview image scope, destination endpoints, budget, and output paths, then launch.

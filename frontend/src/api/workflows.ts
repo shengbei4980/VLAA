@@ -75,6 +75,7 @@ export interface PreparedWorkflowRun {
     image_hashes: string[];
   }>;
   profile_snapshot: TaskProfileConfig;
+  sam_config?: { model: string; device?: string; enabled?: boolean; weights_available?: boolean } | null;
   template_snapshot: WorkflowTemplate;
   outputs?: WorkflowOutputDestinations;
 }
@@ -140,6 +141,11 @@ export const workflowApi = {
     ),
   review: (id: string) =>
     workflowRequest<WorkflowReview>(`/reviews/${encodeURIComponent(id)}`),
+  continueEditing: (id: string, revision: number) =>
+    workflowRequest<WorkflowReview>(
+      `/reviews/${encodeURIComponent(id)}/continue-editing`,
+      { expected_revision: revision },
+    ),
   exportLabelMe: (id: string, revision: number, payload: ReviewPayload) =>
     workflowRequest<SavedLabelMeExport>(
       `/reviews/${encodeURIComponent(id)}/labelme`,

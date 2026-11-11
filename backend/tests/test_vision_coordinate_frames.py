@@ -38,32 +38,33 @@ def encoded_box(pixel_box, coordinate_format, view):
                  for index, value in enumerate(pixel_box))
 
 
-@pytest.mark.parametrize("max_side", [2301, 4096])
-def test_original_size_sending_preserves_pixels_source_hash_and_coordinate_mapping(max_side):
-    source = Image.new("RGB", (2301, 1955), (20, 40, 60))
-    source.putpixel((1200, 900), (240, 80, 10))
+@pytest.mark.parametrize("dimensions", [(2301, 1955), (5001, 193), (193, 5001)])
+def test_original_size_sending_preserves_pixels_source_hash_and_coordinate_mapping(dimensions):
+    width, height = dimensions
+    source = Image.new("RGB", dimensions, (20, 40, 60))
+    source.putpixel((width // 2, height // 2), (240, 80, 10))
     buffer = io.BytesIO()
     source.save(buffer, format="PNG")
     content = buffer.getvalue()
     expected_hash = sha256(content).hexdigest()
 
-    image_hash, views = prepare_views(content, ImageStrategy(), max_side)
+    image_hash, views = prepare_views(content, ImageStrategy())
 
     assert image_hash == expected_hash
     assert buffer.getvalue() == content
     assert sha256(content).hexdigest() == expected_hash
     assert len(views) == 1
     view = views[0]
-    assert (view.sent_width, view.sent_height) == (2301, 1955)
-    assert view.crop == (0, 0, 2301, 1955)
+    assert (view.sent_width, view.sent_height) == dimensions
+    assert view.crop == (0, 0, width, height)
     assert view.metadata()["scale_xy"] == [1, 1]
     with Image.open(io.BytesIO(view.content)) as sent:
         assert sent.size == source.size
         assert sent.tobytes() == source.tobytes()
-    box = BBox(x=123.25, y=245.5, width=480.5, height=759.25)
+    box = BBox(x=width * .1, y=height * .1, width=width * .2, height=height * .3)
     projected = view.sent_box(box, "pixel")
-    assert projected == (123.25, 245.5, 603.75, 1004.75)
-    assert view.original_box(projected, "pixel").model_dump() == box.model_dump()
+    assert projected == pytest.approx((box.x, box.y, box.x + box.width, box.y + box.height))
+    assert view.original_box(projected, "pixel").model_dump() == pytest.approx(box.model_dump())
 
 
 @pytest.mark.parametrize("coordinate_format", FORMATS)
@@ -78,6 +79,37 @@ def test_every_frame_roundtrips_original_boxes_without_changing_units(coordinate
     expected = encoded_box((sent_width * .1, sent_height * .2, sent_width * .7, sent_height * .7), coordinate_format, view)
     assert sent == pytest.approx(expected)
     assert view.original_box(sent, coordinate_format).model_dump() == pytest.approx(source.model_dump())
+
+
+@pytest.mark.parametrize("coordinate_format", FORMATS)
+def test_polygon_vertices_map_through_normalization_and_crop_offsets(coordinate_format):
+    view = ImageView("crop", b"", 1000, 1200, (200, 300, 600, 900), 100, 150, False)
+    sent_pixels = [(10, 20), (80, 20), (75, 100), (20, 90)]
+    if coordinate_format == "pixel":
+        polygon = sent_pixels
+    else:
+        factor = 1 if coordinate_format == "normalized_1" else 1000
+        polygon = [(x * factor / 100, y * factor / 150) for x, y in sent_pixels]
+    original = view.original_polygon(polygon, coordinate_format)
+    for actual, expected in zip(original, [(240, 380), (520, 380), (500, 700), (280, 660)]):
+        assert actual == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("polygon", [
+    None, [], [(0, 0), (20, 0)], [(0, 0), (20, 0), (40, 0)],
+    [(0, 0), (50, 50), (0, 50), (50, 0)],
+    [(0, 0), (100, 0), (20, 80), (80, 80), (0, 40)],
+    [(0, 0), (100, 0), (100, 50), (50, 0), (0, 50)],
+    [(0, 0), (20, 0), (20, float("inf"))],
+    [(0, 0), (20, 0), (20, 900)], [(0, 0), (20, 0), (True, 20)],
+    [(0, 0), (20, 0), ("20", 20)], [(0, 0), (20, 0), (20,)],
+])
+def test_invalid_direct_polygons_are_rejected_with_safe_evidence(polygon):
+    with pytest.raises(ValidationError) as error:
+        frame().original_polygon(polygon, "pixel")
+    assert error.value.error_code == "vision_polygon_invalid"
+    assert error.value.details["source_frame"] == "sent_image"
+    json.dumps(error.value.details, allow_nan=False)
 
 
 @pytest.mark.parametrize("coordinate_format", FORMATS)

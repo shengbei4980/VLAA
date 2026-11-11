@@ -6,7 +6,8 @@ import { WorkflowView } from "./WorkflowView";
 import { workflowApi, type PreparedWorkflowRun } from "../api/workflows";
 import { api } from "../api/client";
 import type { Dataset, ImageItem } from "../types";
-import type { TaskProfile, WorkflowTemplate } from "../types/workflows";
+import type { TaskProfile, WorkflowTemplate, WorkflowReview } from "../types/workflows";
+const { runViewProps } = vi.hoisted(() => ({ runViewProps: vi.fn() }));
 vi.mock("../api/workflows", () => ({
   workflowApi: {
     profiles: vi.fn(),
@@ -23,12 +24,82 @@ vi.mock("../api/client", () => ({
   apiUrl: (path: string) => path,
 }));
 vi.mock("./WorkflowRunView", () => ({
-  WorkflowRunView: ({ runId, initialReviewId }: { runId: string; initialReviewId?: string }) => <p>运行 {runId}{initialReviewId ? ` · 复核 ${initialReviewId}` : ""}</p>,
+  WorkflowRunView: (props: { runId: string; initialReviewId?: string; onOpenReviewRevision?: (review: WorkflowReview) => void; onEditImage?: (datasetId: string, imageId: string) => void }) => {
+    runViewProps(props);
+    return <p>运行 {props.runId}{props.initialReviewId ? ` · 复核 ${props.initialReviewId}` : ""}</p>;
+  },
 }));
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true;
 describe("reviewable launch scope", () => {
+  it("opens the new run and exact editable revision after continuing a confirmed review", async () => {
+    vi.clearAllMocks();
+    window.history.replaceState(null, "", "#workflow/run-old/review/review-old");
+    vi.mocked(workflowApi.profiles).mockResolvedValue([]);
+    vi.mocked(workflowApi.templates).mockResolvedValue([]);
+    const edit = vi.fn();
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<WorkflowView datasets={[]} onEditImage={edit} onSettings={vi.fn()} onOpenTraining={vi.fn()} onOpenModel={vi.fn()} />));
+      const props = runViewProps.mock.lastCall![0] as { onOpenReviewRevision: (review: WorkflowReview) => void; onEditImage: typeof edit };
+      expect(props.onEditImage).toBe(edit);
+      act(() => props.onOpenReviewRevision({ id: "review-next", run_id: "run-next" } as WorkflowReview));
+      expect(container.textContent).toBe("运行 run-next · 复核 review-next");
+    } finally {
+      act(() => root.unmount());
+      window.history.replaceState(null, "", "#workflow");
+    }
+  });
+  it.each(["vision_llm", "sam", undefined])("shows the chosen contour source before starting a segmentation run (%s)", async (segmenter) => {
+    vi.clearAllMocks();
+    window.history.replaceState(null, "", "#workflow");
+    const dataset: Dataset = { id: "segment-dataset", name: "建筑构件", task_type: "segment", description: null, image_count: 1, annotated_image_count: 0, class_count: 1, created_at: "", updated_at: "" };
+    const profile: TaskProfile = {
+      id: "segment-profile", key: "segment-profile", name: "轮廓方案", version: 1,
+      config: { task_type: "segment", geometry: "mask", class_rules: [{ class_id: "tower", name: "塔体" }], models: { segmenter }, image_strategy: {}, training: {}, quality_conditions: {}, repair_limit: 0, max_requests: 10, export_format: "labelme" },
+    };
+    const template: WorkflowTemplate = {
+      id: "visual-segment", key: "vision_review_export_v1", name: "用视觉 LLM 标注并检查", version: 1,
+      nodes: [
+        { id: "propose", type: "vision_propose", version: 1, scope: "item", params: { source: "vision" } },
+        { id: "segment", type: "segment_proposals", version: 1, scope: "item", params: {}, task_types: ["segment"] },
+        { id: "confirm", type: "human_review", version: 1, scope: "item", params: {} },
+      ],
+    };
+    const image: ImageItem = { id: "image", dataset_id: dataset.id, file_name: "tower.png", width: 100, height: 80, split: "train", status: "unannotated", file_url: "/image", created_at: "", updated_at: "" };
+    vi.mocked(workflowApi.profiles).mockResolvedValue([profile]);
+    vi.mocked(workflowApi.templates).mockResolvedValue([template]);
+    vi.mocked(workflowApi.runs).mockResolvedValue([]);
+    vi.mocked(workflowApi.projects).mockResolvedValue([]);
+    vi.mocked(api.listImages).mockResolvedValue({ total: 1, items: [image] });
+    const prepared: PreparedWorkflowRun = {
+      request: { idempotency_key: "frozen", template_id: template.id, profile_id: profile.id, dataset_id: dataset.id, image_ids: [image.id], next_batches: [] },
+      vision_approvals: { proposer: { mode: "local", api_base: "http://127.0.0.1:9000/v1", model: "vision", max_requests: 10 } },
+      scope: [{ dataset_id: dataset.id, image_ids: [image.id], image_hashes: ["hash"] }], profile_snapshot: profile.config, template_snapshot: template,
+      sam_config: segmenter === "vision_llm" ? null : { model: "sam_b.pt", enabled: true, weights_available: true },
+    };
+    vi.mocked(workflowApi.prepareRun).mockResolvedValue(prepared);
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<WorkflowView datasets={[dataset]} onSettings={vi.fn()} onOpenTraining={vi.fn()} onOpenModel={vi.fn()} />));
+      const summary = container.querySelector(".workflow-launch-summary")!;
+      expect(summary.textContent).toContain(segmenter === "vision_llm" ? "视觉 LLM 直接画轮廓" : "视觉 LLM 定位 + SAM 分割");
+      const preview = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent === "预览本次任务")!;
+      expect(preview.disabled).toBe(false);
+      await act(async () => preview.click());
+      const source = container.querySelector(".workflow-launch .workflow-contour-source")!;
+      expect(source.textContent).toContain(segmenter === "vision_llm" ? "本次不调用 SAM" : "sam_b.pt");
+      expect(container.querySelector(".workflow-launch")?.textContent).not.toContain("缩放");
+      expect(workflowApi.createRun).not.toHaveBeenCalled();
+    } finally {
+      act(() => root.unmount()); container.remove(); window.history.replaceState(null, "", "#workflow");
+    }
+  });
+
   it("opens the exact workflow review linked from a dataset", async () => {
     vi.clearAllMocks();
     window.history.replaceState(null, "", "#workflow/run-target/review/review-target");

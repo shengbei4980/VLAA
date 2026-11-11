@@ -250,6 +250,32 @@ export default function App() {
     return items.find((item) => item.id === datasetId);
   };
 
+  const editDatasetImage = (datasetId: string, imageId: string) => {
+    requestLeave(() => void run(async () => {
+      const generation = ++openImageGeneration.current;
+      const dataset = await resolveDataset(datasetId);
+      if (!dataset) throw new Error("图片所属数据集不存在");
+      const [nextClasses, page] = await Promise.all([
+        api.listClasses(datasetId), api.listImages(datasetId),
+      ]);
+      if (generation !== openImageGeneration.current) return;
+      const image = page.items.find((item) => item.id === imageId);
+      if (!image) throw new Error("图片不存在");
+      const savedAnnotations = await api.getAnnotations(datasetId, imageId);
+      if (generation !== openImageGeneration.current) return;
+      setSelected(dataset);
+      setClasses(nextClasses);
+      setActiveClassId(nextClasses[0]?.id ?? "");
+      setImages(page.items);
+      setSelectedImage(image);
+      setAnnotations(savedAnnotations);
+      setAnnotationDirty(false);
+      setWorkflowDirty(false);
+      setView("annotation");
+      setNotice("已打开已保存标注，可继续补画和修边。修改后请保存并重新确认。");
+    }));
+  };
+
   const openAgentDataset = async (datasetId: string) => {
     await run(async () => {
       const dataset = await resolveDataset(datasetId);
@@ -365,7 +391,7 @@ export default function App() {
           onFocusModelConsumed={() => setFocusModelId(undefined)}
           onAskAgent={(model) => { setAgentFocus({ ...(model.dataset_id ? { dataset: { id: model.dataset_id, name: datasets.find((d) => d.id === model.dataset_id)?.name ?? model.dataset_id } } : {}), model: { id: model.id, name: model.name } }); setView("agent"); }}
         />
-      ) : view === "workflow" ? <WorkflowView initialDatasetId={workflowDatasetId} onDataChanged={() => void refreshDatasets().catch((reason: unknown) => setError(errorMessage(reason)))} onStorageSettings={() => setView("settings-storage")} onDirtyChange={setWorkflowDirty} datasets={datasets} onSettings={() => setView("settings-vision")} onOpenTraining={(datasetId, taskId) => void openAgentTrainingTask(datasetId, taskId)} onOpenModel={(datasetId, modelId) => void openAgentModel(datasetId, modelId)} /> : view === "settings-llm" || view === "settings-sam" || view === "settings-vision" || view === "settings-storage" || view === "settings-language" ? (
+      ) : view === "workflow" ? <WorkflowView initialDatasetId={workflowDatasetId} onEditImage={editDatasetImage} onDataChanged={() => void refreshDatasets().catch((reason: unknown) => setError(errorMessage(reason)))} onStorageSettings={() => setView("settings-storage")} onDirtyChange={setWorkflowDirty} datasets={datasets} onSettings={() => setView("settings-vision")} onOpenTraining={(datasetId, taskId) => void openAgentTrainingTask(datasetId, taskId)} onOpenModel={(datasetId, modelId) => void openAgentModel(datasetId, modelId)} /> : view === "settings-llm" || view === "settings-sam" || view === "settings-vision" || view === "settings-storage" || view === "settings-language" ? (
         <SettingsView
           tab={view === "settings-llm" ? "llm" : view === "settings-sam" ? "sam" : view === "settings-vision" ? "vision" : view === "settings-storage" ? "storage" : "language"}
           locale={locale}

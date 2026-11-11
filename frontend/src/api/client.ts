@@ -35,6 +35,13 @@ export function apiUrl(path: string): string {
   return `${API_BASE}${path}`;
 }
 
+export class ApiError extends Error {
+  constructor(public readonly status: number, message: string) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
 export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(apiUrl(path), init);
   if (!response.ok) {
@@ -46,7 +53,7 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
     } catch {
       // Keep the HTTP status when the server does not return JSON.
     }
-    throw new Error(message);
+    throw new ApiError(response.status, message);
   }
   if (response.status === 204) return undefined as T;
   return (await response.json()) as T;

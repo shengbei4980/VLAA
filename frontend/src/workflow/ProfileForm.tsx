@@ -5,6 +5,7 @@ import { storageApi, type OutputDestination } from "../api/storage";
 import type { ClassLabel, Dataset, ModelVersion, TaskType } from "../types";
 import type {
   ProfileClassRule,
+  SegmentationSource,
   TaskProfile,
   TaskProfileConfig,
   WorkflowTemplate,
@@ -29,7 +30,7 @@ function defaultConfig(task: TaskType): TaskProfileConfig {
     models: {
       proposer: "proposer",
       reviewer: "reviewer",
-      segmenter: "sam",
+      segmenter: task === "segment" ? "vision_llm" : "sam",
       training: defaultModelFor(task),
     },
     image_strategy: {
@@ -296,6 +297,8 @@ export function ProfileForm({
       const updatedModels = { ...objectFromJson(models, "模型配置") };
       if (updatedModels.training === defaultModelFor(config.task_type))
         updatedModels.training = defaultModelFor(task);
+      if (!source && task === "segment" && config.task_type !== "segment")
+        updatedModels.segmenter = "vision_llm";
       setModels(JSON.stringify(updatedModels, null, 2));
       setConfig({
         ...config,
@@ -359,6 +362,7 @@ export function ProfileForm({
   };
 
   const modelValues = formValues(models);
+  const segmentationSource: SegmentationSource = modelValues.segmenter === "vision_llm" ? "vision_llm" : "sam";
   const trainingValues = formValues(training);
   const strategyValues = formValues(strategy);
   const ruleValues = formValues(rules);
@@ -767,9 +771,24 @@ export function ProfileForm({
             template.nodes.some(
               (node) => node.type === "segment_proposals",
             )) && (
-            <p className="hint">
-              流程中的“生成目标轮廓”使用“设置 → SAM 设置”中的分割模型。
-            </p>
+            <>
+              <label>
+                分割轮廓来源
+                <select
+                  value={segmentationSource}
+                  onChange={(event) => updateJson(models, setModels, "segmenter", event.target.value, "模型配置")}
+                >
+                  <option value="vision_llm">视觉 LLM 直接画轮廓</option>
+                  <option value="sam">视觉 LLM 定位 + SAM 分割</option>
+                </select>
+              </label>
+              <p className="hint">
+                {segmentationSource === "vision_llm"
+                  ? "视觉 LLM 直接返回多边形轮廓，不调用 SAM。所选视觉服务需支持输出多边形坐标，生成后可在复核页补画、调整顶点和修边。"
+                  : "视觉 LLM 提出目标框，再由“设置 → SAM 辅助”中配置的模型生成轮廓。生成后仍需检查边界并补齐遗漏。"}
+              </p>
+              <p className="hint">此选择用于视觉 LLM 生成的分割候选。已有分割模型输出的轮廓会保留，直接画轮廓也需要人工复核。</p>
+            </>
           )}
       </section>
       {showsTraining && (

@@ -7,7 +7,7 @@ from app.core.errors import ValidationError
 from app.workflow.contracts import CONTRACTS
 from app.workflow.previews import MAX_PREVIEW_BYTES
 from app.workflow.schemas import (
-    BatchExportRequest, ProfileCreate, ProjectCreate, ReviewDecision, ReviewDraft,
+    BatchExportRequest, ContinueReviewEditing, ProfileCreate, ProjectCreate, ReviewDecision, ReviewDraft,
     RetryRequest, RunCreate, TemplateCreate,
 )
 from app.workflow.service import WorkflowService
@@ -154,6 +154,12 @@ def download_preview(review_id: str, file_name: str, service: WorkflowService = 
 @router.put("/reviews/{review_id}/draft")
 def save_review(review_id: str, payload: ReviewDraft, service: WorkflowService = Depends(get_workflow_service)):
     return service.save_review(review_id, payload)
+
+
+@router.post("/reviews/{review_id}/continue-editing", status_code=201)
+def continue_editing(review_id: str, payload: ContinueReviewEditing,
+                     service: WorkflowService = Depends(get_workflow_service)):
+    return service.continue_editing(review_id, payload.expected_revision)
 
 
 @router.post("/reviews/{review_id}/labelme", status_code=201)

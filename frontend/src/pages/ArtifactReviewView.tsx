@@ -14,7 +14,7 @@ import {
   MaskReviewCanvas,
   type PromptPoint,
 } from "../annotation/MaskReviewCanvas";
-import { api, apiUrl } from "../api/client";
+import { api, apiUrl, ApiError } from "../api/client";
 import { workflowApi } from "../api/workflows";
 import { visionApi } from "../api/vision";
 import { useLeaveConfirm } from "../components/useLeaveConfirm";
@@ -104,6 +104,8 @@ export function ArtifactReviewView({
   onDirtyChange,
   onNext,
   batchPosition,
+  onOpenRevision,
+  onEditImage,
 }: {
   reviewId: string;
   profile: TaskProfileConfig;
@@ -112,6 +114,8 @@ export function ArtifactReviewView({
   onDirtyChange?: (dirty: boolean) => void;
   onNext?: () => void;
   batchPosition?: { index: number; total: number; remaining: number };
+  onOpenRevision?: (review: WorkflowReview) => void;
+  onEditImage?: (datasetId: string, imageId: string) => void;
 }) {
   const [review, setReview] = useState<WorkflowReview>();
   const [payload, setPayload] = useState<ReviewPayload>();
@@ -126,6 +130,7 @@ export function ArtifactReviewView({
   const [pendingDrawing, setPendingDrawing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [continueEditingUnavailable, setContinueEditingUnavailable] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState<ReactNode>("");
   const [coverage, setCoverage] = useState(false);
@@ -368,11 +373,33 @@ export function ArtifactReviewView({
     }
   };
 
+  const continueEditing = async () => {
+    if (!review || busy || !onOpenRevision) return;
+    setBusy(true);
+    setError("");
+    setContinueEditingUnavailable(false);
+    try {
+      const next = await workflowApi.continueEditing(reviewId, review.revision);
+      if (mounted.current) onOpenRevision(next);
+    } catch (failure) {
+      if (mounted.current) {
+        const unavailable = failure instanceof ApiError && failure.status === 404;
+        setContinueEditingUnavailable(unavailable);
+        setError(unavailable ? "当前服务尚未提供新修订接口，请使用数据集编辑器继续修改。" : failure instanceof Error ? failure.message : "打开继续修改失败，请重试。");
+      }
+    } finally {
+      if (mounted.current) setBusy(false);
+    }
+  };
+
   const readOnly =
     !!review &&
     (["approved", "background", "excluded"].includes(review.status) ||
       (review.status === "decided" && review.decision !== "rejected"));
   const editLocked = busy || readOnly || pendingDrawing;
+  const canContinueEditing = !!review &&
+    (["approved", "background"].includes(review.status) ||
+      (review.status === "decided" && ["approved", "background"].includes(review.decision ?? "")));
   const confirmed =
     !!review &&
     !dirty &&
@@ -1178,8 +1205,20 @@ export function ArtifactReviewView({
                 <button className="button" disabled={editLocked || !dirty} onClick={() => void save()}>
                   {saving ? "正在保存…" : "保存修改"}
                 </button>
+                {canContinueEditing && onOpenRevision && (
+                  <button className="button primary" disabled={busy} aria-describedby="review-continue-editing-help" onClick={() => void continueEditing()}>
+                    {busy ? "正在打开编辑…" : "继续修改"}
+                  </button>
+                )}
                 {onNext && <button className="button" disabled={busy || pendingDrawing} onClick={() => requestLeave(onNext)}>下一张待复核 →</button>}
               </div>
+              {canContinueEditing && onOpenRevision && <p id="review-continue-editing-help" className="workflow-review-save-hint">继续修改后可使用画笔、橡皮和多边形补全标注。保存后，再次确认整图即可用于训练与正式导出。</p>}
+              {canContinueEditing && continueEditingUnavailable && onEditImage && (
+                <div className="validation workflow-review-save-hint" role="status">
+                  <p>当前后端需重启才能打开新修订。现在可在数据集编辑器中继续修改已保存标注；修改后请保存并重新确认。</p>
+                  <button className="button" disabled={busy} onClick={() => requestLeave(() => onEditImage(payload.dataset_id, payload.image_id))}>在数据集编辑器中继续修改</button>
+                </div>
+              )}
               {error && <p className="workflow-review-save-error" role="alert">{error}</p>}
             </section>
             {!readOnly && (

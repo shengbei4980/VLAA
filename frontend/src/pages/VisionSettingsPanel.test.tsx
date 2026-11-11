@@ -35,7 +35,8 @@ describe("vision settings fallback", () => {
     expect(container.textContent).not.toContain("能力探针");
     expect(container.textContent).toContain("远端 API");
     expect(container.textContent).toContain("本地模型 HTTP 服务");
-    expect(container.textContent).toContain("2301 或以上即可按原尺寸发送");
+    expect(container.textContent).not.toContain("最大图像边长");
+    expect(container.textContent).toContain("按原图尺寸发送");
     const endpoint =
       container.querySelector<HTMLInputElement>('input[type="url"]')!;
     const key = container.querySelector<HTMLInputElement>(
@@ -74,7 +75,6 @@ describe("vision settings fallback", () => {
       auth_scheme: "bearer",
       auth_header_name: "",
       coordinate_format: "normalized_1000",
-      max_image_side: 2048,
       max_output_tokens: 8192,
       timeout_seconds: 120,
       multi_image: true,
@@ -120,7 +120,7 @@ describe("vision settings fallback", () => {
     const submitted = vi.mocked(visionApi.saveSettings).mock.calls[0][0];
     expect(submitted.proposer.api_base).toBe("https://new-proposer.example/v1");
     expect(submitted.proposer.model).toBe("saved-proposer");
-    expect(submitted.proposer.max_image_side).toBe(2048);
+    expect(submitted.proposer).not.toHaveProperty("max_image_side");
     expect(submitted.reviewer).toMatchObject(server.reviewer);
     expect(submitted.reviewer.api_key).toBeUndefined();
     expect(

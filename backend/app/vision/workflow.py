@@ -60,6 +60,11 @@ def build_vision_handlers(storage: Storage, settings: Settings, session_factory=
         ruleset = str(profile.get("rules", {}).get("version", "v1"))
         return classes, strategy, ruleset, approval
 
+    def contour_arguments(context: dict) -> dict:
+        profile = context["profile"]
+        return {"geometry": "polygon"} if (profile["task_type"] == "segment"
+            and profile.get("models", {}).get("segmenter", "sam") == "vision_llm") else {}
+
     def payload_from_objects(result: dict, context: dict, image: dict, *, preserve_existing: bool = False) -> dict:
         objects = result.pop("objects", [])
         annotations = []
@@ -142,18 +147,20 @@ def build_vision_handlers(storage: Storage, settings: Settings, session_factory=
         image, path = image_context(context)
         classes, strategy, ruleset, approval = configuration(context, "proposer")
         result = service.propose(image["image_id"], path, classes, ruleset, strategy, approval,
-                                 task_instructions=context["profile"].get("rules", {}).get("task_instructions", ""))
+                                 task_instructions=context["profile"].get("rules", {}).get("task_instructions", ""),
+                                 **contour_arguments(context))
         return payload_from_objects(result.model_dump(), context, image, preserve_existing=True)
 
     def segment(context: dict) -> dict:
         image, _ = image_context(context)
         payload = dict(context.get("payload") or {})
+        direct_contours = bool(contour_arguments(context))
         annotations = []
         for raw in payload.get("annotations", []):
             item = dict(raw)
-            if not item.get("mask_ref") and item.get("polygon"):
+            if not direct_contours and not item.get("mask_ref") and item.get("polygon"):
                 item["mask_ref"] = MaskService(storage).write(polygon_mask(item["polygon"], image["width"], image["height"])).mask_ref
-            if not item.get("mask_ref") and item.get("class_id") is not None:
+            if not item.get("mask_ref") and item.get("class_id") is not None and not direct_contours:
                 frozen = context["inputs"].get("sam_config")
                 if frozen is None:
                     raise ValidationError("vision_segmenter_not_frozen", "Prepare this run with an explicit SAM configuration before segmentation.")
@@ -164,7 +171,8 @@ def build_vision_handlers(storage: Storage, settings: Settings, session_factory=
                 item.update(type="polygon", mask_ref=result.mask_ref, polygon=None)
                 item["provenance_json"] = {**item.get("provenance_json", {}), "segmenter": result.model_dump(exclude={"polygon"})}
             annotations.append(item)
-        return {**payload, **image, "annotations": annotations}
+        return {**payload, **image, "annotations": annotations,
+                "contour_source": "vision_llm" if direct_contours else "sam"}
 
     def review(context: dict) -> dict:
         image, path = image_context(context)
@@ -172,7 +180,8 @@ def build_vision_handlers(storage: Storage, settings: Settings, session_factory=
         classes, strategy, ruleset, approval = configuration(context, "reviewer")
         result = service.review(image["image_id"], path, classes, ruleset, int(payload.get("revision", 1)),
                                 payload.get("annotations", []), strategy, approval,
-                                task_instructions=context["profile"].get("rules", {}).get("task_instructions", ""))
+                                task_instructions=context["profile"].get("rules", {}).get("task_instructions", ""),
+                                **contour_arguments(context))
         return {**payload, "issues": [*payload.get("issues", []), *result.issues], "visual_review": result.model_dump(), "request_count": result.request_count}
 
     def repair(context: dict) -> dict:
@@ -188,7 +197,8 @@ def build_vision_handlers(storage: Storage, settings: Settings, session_factory=
         classes, strategy, ruleset, approved = configuration(context, "proposer")
         result = service.repair(image["image_id"], path, classes, ruleset, int(payload.get("revision", 1)),
                                 payload.get("annotations", []), payload.get("issues", []), strategy, approved,
-                                task_instructions=context["profile"].get("rules", {}).get("task_instructions", ""))
+                                task_instructions=context["profile"].get("rules", {}).get("task_instructions", ""),
+                                **contour_arguments(context))
         repaired = payload_from_objects(result, context, image)
         updated = {**payload, **repaired, "repair_attempts": attempts + 1,
                    "visual_review": {**payload.get("visual_review", {}), "stale": True},

@@ -19,7 +19,7 @@ def configure(settings, coordinate_format="pixel"):
 
 
 @pytest.mark.parametrize("coordinate_format,expected", [
-    ("pixel", [8, 8, 20, 20]),
+    ("pixel", [40, 40, 100, 100]),
     ("normalized_1", [.125, .2, .3125, .5]),
     ("normalized_1000", [125, 200, 312.5, 500]),
 ])
@@ -42,14 +42,14 @@ def test_review_context_boxes_use_the_sent_frame(environment, coordinate_format,
     assert "mask_ref" not in values[0] and "polygon" not in values[0]
 
 
-@pytest.mark.parametrize("bad_box", [[100, 20, 200, 60], [40, 20, 10, 30], [0, 0, float("inf"), 20]])
+@pytest.mark.parametrize("bad_box", [[100, 20, 400, 60], [40, 20, 10, 30], [0, 0, float("inf"), 20]])
 def test_bad_proposal_geometry_preserves_good_candidates_and_creates_review_issue(environment, bad_box):
     settings, storage, path = environment
     configure(settings)
 
     def endpoint(request):
         return reply({"objects": [
-            {"class_id": "tower", "bbox": [8, 8, 20, 20], "evidence": "Valid visible object"},
+            {"class_id": "tower", "bbox": [40, 40, 100, 100], "evidence": "Valid visible object"},
             {"class_id": "tower", "bbox": bad_box, "evidence": "Geometry needs human review"},
         ]})
 
@@ -86,3 +86,39 @@ def test_bad_repair_retains_the_original_object_and_audits_the_problem(environme
     assert result["request_count"] == 1
     assert any(issue["type"] == "coordinate_error" for issue in result["issues"])
     assert '"bbox": [8.0, 8.0, 28.0, 28.0]' in prompts[0]
+
+
+@pytest.mark.parametrize("from_mask", [False, True])
+def test_local_polygon_repairs_cover_the_whole_object_and_all_related_regions(environment, from_mask):
+    settings, storage, path = environment
+    polygon = [[40, 40], [240, 40], [240, 170], [140, 150], [40, 170]]
+    metadata_seen = []
+
+    def endpoint(request):
+        content = json.loads(request.content)["messages"][0]["content"]
+        metadata = json.loads(content[1]["text"])
+        left, top, right, bottom = metadata["crop_xyxy"]
+        assert left <= 40 and top <= 10 and right >= 290 and bottom >= 170
+        assert "complete target object" in content[0]["text"]
+        assert "Existing target objects in SENT-image coordinates=" in content[0]["text"]
+        metadata_seen.append(metadata)
+        return reply({"objects": [{"class_id": "tower", "polygon": [[x-left, y-top] for x,y in polygon], "evidence": "Complete corrected outline."}]})
+
+    objects = [{"object_id": "whole", "class_id": "tower", "type": "polygon", "polygon": polygon,
+                "bbox": {"x": 40, "y": 40, "width": 200, "height": 130}}]
+    if from_mask:
+        from app.dataset.annotation.masks import MaskService, polygon_mask
+        objects[0]["mask_ref"] = MaskService(storage).write(polygon_mask(polygon, 320, 200)).mask_ref
+        objects[0]["polygon"] = None
+        objects[0]["bbox"] = {"x": 50, "y": 50, "width": 10, "height": 10}
+    issues = [
+        {"type": "boundary", "object_id": "whole", "bbox": {"x": 50, "y": 50, "width": 10, "height": 10}},
+        {"type": "boundary", "object_id": "whole", "bbox": {"x": 280, "y": 10, "width": 10, "height": 10}},
+    ]
+    result = VisionService(storage, settings, transport=httpx.MockTransport(endpoint)).repair(
+        "image", path, [VisionClassRule(id="tower", name="Tower")], "v1", 1, objects, issues,
+        ImageStrategy(), approval(settings, path), geometry="polygon")
+    assert len(metadata_seen) == result["request_count"] == 1
+    assert result["repair_diff"][0]["applied"] is True
+    assert result["objects"][0]["object_id"] == "whole"
+    assert result["objects"][0]["polygon"] == [tuple(point) for point in polygon]

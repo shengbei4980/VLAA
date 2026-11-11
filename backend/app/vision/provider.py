@@ -12,7 +12,7 @@ from app.agent.llm_auth import build_llm_request_headers
 from app.core.errors import ValidationError
 from app.core.local_compute import local_compute_gate
 from app.vision.images import ImageView
-from app.vision.schemas import VisionEndpointInternal
+from app.vision.schemas import NativePolygonProposal, VisionEndpointInternal
 
 Result = TypeVar("Result", bound=BaseModel)
 
@@ -54,13 +54,21 @@ class OpenAICompatibleVisionProvider:
         }
         payload["messages"][0]["content"][0]["text"] += "\nReturn one JSON object matching this schema.\n" + json.dumps(schema)
         bounds = {"pixel": [frame.sent_width, frame.sent_height], "normalized_1": [1, 1], "normalized_1000": [1000, 1000]}[endpoint.coordinate_format]
-        content.append({"type": "text", "text": (
-            "\nFinal coordinate contract. This contract governs every returned bbox and takes precedence over "
-            "coordinate wording in task descriptions, examples and image metadata. "
+        polygon_output = result_type is NativePolygonProposal
+        shape_contract = (
+            "Return polygon as ordered [x,y] boundary vertices with frame=sent_image, x rightward and y downward. "
+            f"Every vertex must satisfy 0 <= x <= {bounds[0]} and 0 <= y <= {bounds[1]}. "
+            "Require at least three distinct vertices without crossing edges. Do not output bbox as a replacement contour. "
+            if polygon_output else
             "Return bbox as [left,top,right,bottom] with frame=sent_image, x rightward and y downward. "
+            f"Require 0 <= left < right <= {bounds[0]} and 0 <= top < bottom <= {bounds[1]}. "
+        )
+        content.append({"type": "text", "text": (
+            f"\nFinal coordinate contract. This contract governs every returned {'polygon vertex' if polygon_output else 'bbox'} and takes precedence over "
+            "coordinate wording in task descriptions, examples and image metadata. "
+            + shape_contract +
             f"The actual sent image is {frame.sent_width} pixels wide and {frame.sent_height} pixels high. "
-            f"coordinate_format={endpoint.coordinate_format}; require 0 <= left < right <= {bounds[0]} "
-            f"and 0 <= top < bottom <= {bounds[1]}. "
+            f"coordinate_format={endpoint.coordinate_format}. "
             "All supplied images and overlays share this geometry. Use only the current sent image frame. "
             "Original-image sizes and crop offsets describe internal transforms and must not be used as output coordinates."
         )})

@@ -17,6 +17,7 @@ import {
   nodeDescription,
   nodeLabel,
   splitLabel,
+  segmentationSourceLabel,
   templateGuide,
   templateTitle,
   workflowError,
@@ -32,6 +33,7 @@ export function WorkflowView({
   onStorageSettings,
   initialDatasetId,
   onDataChanged,
+  onEditImage,
 }: {
   datasets: Dataset[];
   onSettings: () => void;
@@ -41,6 +43,7 @@ export function WorkflowView({
   onStorageSettings?: () => void;
   initialDatasetId?: string;
   onDataChanged?: () => void;
+  onEditImage?: (datasetId: string, imageId: string) => void;
 }) {
   const [profiles, setProfiles] = useState<TaskProfile[]>([]);
   const [templates, setTemplates] = useState<WorkflowTemplate[]>([]);
@@ -167,6 +170,9 @@ export function WorkflowView({
     (node) =>
       node.type === "vision_propose" && node.params?.source === "vision",
   );
+  const usesVisionContours = profile?.config.task_type === "segment" && template?.nodes.some(
+    (node) => node.type === "vision_propose" && (node.params?.source === "vision" || !profile.config.models.inference),
+  );
   const beginPreview = async () => {
     if (!profile || !template || !dataset) return;
     setBusy(true);
@@ -236,6 +242,11 @@ export function WorkflowView({
         initialReviewId={initialReviewId}
         runId={runId}
         onOpenRun={(id) => { setInitialReviewId(""); setRunId(id); }}
+        onOpenReviewRevision={(review) => {
+          setInitialReviewId(review.id);
+          setRunId(review.run_id);
+        }}
+        onEditImage={onEditImage}
         onBack={() => {
           setRunId("");
           setInitialReviewId("");
@@ -664,6 +675,9 @@ export function WorkflowView({
             <dt>类别与模型</dt>
             <dd>{profile?.name ?? "待选择方案"}</dd>
           </div>
+          {usesVisionContours && profile && (
+            <div><dt>分割轮廓来源</dt><dd>{segmentationSourceLabel(profile.config)}</dd></div>
+          )}
           <div>
             <dt>项目目录</dt>
             <dd>
@@ -723,8 +737,16 @@ export function WorkflowView({
             </p>
             <p>
               服务器已核对图片 hash
-              和模型能力。所选图片及其缩放、切片和对象裁剪可发送到以下端点。
+              和模型能力。所选原尺寸图片、切片和对象裁剪可发送到以下端点。
             </p>
+            {usesVisionContours && (
+              <p className="workflow-contour-source">
+                分割轮廓来源：{segmentationSourceLabel(prepared?.profile_snapshot ?? profile.config)}。
+                {(prepared?.profile_snapshot ?? profile.config).models.segmenter === "vision_llm"
+                  ? "视觉 LLM 直接输出多边形，本次不调用 SAM。轮廓通过坐标校验后供你补画和复核。"
+                  : `本次使用 SAM 根据目标框生成轮廓${prepared?.sam_config?.model ? `，模型：${prepared.sam_config.model}` : ""}。`}
+              </p>
+            )}
             <ul>
               {prepared &&
                 Object.entries(prepared.vision_approvals).map(

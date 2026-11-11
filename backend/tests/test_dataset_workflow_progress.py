@@ -1,4 +1,6 @@
 """Dataset reads project workflow candidates without applying unconfirmed labels."""
+from copy import deepcopy
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 import pytest
@@ -7,13 +9,17 @@ from sqlalchemy import event, select
 from app.api.dependencies import get_session, get_storage
 from app.api.error_handlers import register_error_handlers
 from app.api.routers.datasets import router
+from app.core.errors import ValidationError
 from app.core.models import ClassLabel, Dataset, ImageItem
 from app.core.schemas import AnnotationInput, BBox
 from app.dataset.annotation.progress import image_progress
+from app.dataset.annotation.review import require_confirmed
 from app.dataset.annotation.review_router import router as review_router
 from app.dataset.annotation.service import replace_annotations
-from app.workflow.schemas import ReviewDecision, ReviewDraft
-from test_workflow import drain, start, workflow
+from app.dataset.snapshots import create_snapshot, get_snapshot
+from app.workflow.models import WorkflowItem, WorkflowRun
+from app.workflow.schemas import NodeDefinition, ReviewDecision, ReviewDraft, RunCreate, TemplateCreate
+from test_workflow import approve, drain, start, workflow
 
 
 @pytest.fixture
@@ -146,3 +152,111 @@ def test_latest_current_review_wins_over_newer_stale_review(workflow, progress_c
     assert item["workflow_stale"] is False
     assert summary["confirmed_image_count"] == 1
     assert summary["pending_review_image_count"] == 1
+
+
+def _confirmed_source_and_manual_revision(workflow, *, marked=True):
+    service, _, dataset_id, images, profile, *_ = workflow
+    source = drain(service, start(workflow)["id"])
+    for review in source["reviews"]:
+        approve(service, review)
+    source = drain(service, source["id"])
+    assert source["status"] == "completed"
+    source_review = next(review for review in source["reviews"] if review["payload"]["image_id"] == images[0])
+    if marked:
+        review = service.continue_editing(source_review["id"], source_review["revision"])
+        manual = service.get_run(review["run_id"])
+    else:
+        template = service.create_template(TemplateCreate(
+            key="custom_manual_review", name="Manual review", nodes=[
+                NodeDefinition(id="review", type="human_review"),
+            ],
+        ))
+        manual = drain(service, service.create_run(RunCreate(
+            idempotency_key="manual-revision", template_id=template["id"], profile_id=profile["id"],
+            dataset_id=dataset_id, image_ids=images[:1],
+        ))["id"])
+    assert manual["status"] == "awaiting_review"
+    return source, manual
+
+
+def test_manual_revision_progress_blocks_new_snapshot_until_reconfirmed(workflow, progress_client):
+    service, database, dataset_id, images, *_ = workflow
+    source, manual = _confirmed_source_and_manual_revision(workflow)
+    review = manual["reviews"][0]
+    old_snapshot = next(artifact["payload"] for artifact in source["artifacts"]
+                        if artifact["kind"] == "dataset_snapshot")
+
+    dataset = progress_client.get("/api/datasets").json()[0]
+    assert dataset["confirmed_image_count"] == 1
+    assert dataset["pending_review_image_count"] == 1
+    assert dataset["latest_workflow_run_id"] == manual["id"]
+    assert dataset["latest_workflow_review_id"] == review["id"]
+    with database.session_factory() as session:
+        progress = image_progress(session, [session.get(ImageItem, images[0])])[images[0]]
+        assert progress["formal_confirmed"] is True
+        assert progress["workflow_status"] == "draft"
+        assert progress["workflow_pending"] is progress["has_draft"] is True
+        assert progress["workflow_annotation_count"] == 1
+        with pytest.raises(ValidationError) as blocked:
+            create_snapshot(session, service.storage, dataset_id)
+        assert blocked.value.error_code == "annotation_review_required"
+        assert get_snapshot(session, service.storage, old_snapshot["id"])["manifest"] == old_snapshot["manifest"]
+
+    objects = deepcopy(review["payload"]["objects"])
+    objects[0]["bbox"]["x"] = 32
+    updated = service.save_review(review["id"], ReviewDraft(
+        expected_revision=review["revision"], payload={"objects": objects, "annotations": objects},
+    ))
+    with database.session_factory() as session:
+        with pytest.raises(ValidationError):
+            require_confirmed(session, service.storage, dataset_id)
+    approve(service, updated)
+    assert drain(service, manual["id"])["status"] == "completed"
+    dataset = progress_client.get("/api/datasets").json()[0]
+    assert dataset["confirmed_image_count"] == 2
+    assert dataset["pending_review_image_count"] == 0
+    assert dataset["latest_workflow_review_id"] == review["id"]
+    with database.session_factory() as session:
+        progress = image_progress(session, [session.get(ImageItem, images[0])])[images[0]]
+        assert progress["workflow_status"] == "confirmed"
+        assert progress["workflow_pending"] is progress["has_draft"] is False
+        current_snapshot = create_snapshot(session, service.storage, dataset_id)
+        image = next(image for image in current_snapshot["manifest"]["images"] if image["id"] == images[0])
+        assert image["annotations"][0]["bbox"]["x"] == 32
+        assert get_snapshot(session, service.storage, old_snapshot["id"])["manifest"] == old_snapshot["manifest"]
+
+
+def test_unmarked_human_only_run_does_not_replace_annotation_progress(workflow, progress_client):
+    service, database, dataset_id, *_ = workflow
+    source, _ = _confirmed_source_and_manual_revision(workflow, marked=False)
+    dataset = progress_client.get("/api/datasets").json()[0]
+    assert dataset["confirmed_image_count"] == 2
+    assert dataset["pending_review_image_count"] == 0
+    assert dataset["latest_workflow_run_id"] == source["id"]
+    with database.session_factory() as session:
+        require_confirmed(session, service.storage, dataset_id)
+
+
+@pytest.mark.parametrize("state", ["cancelled", "deleted", "stale", "completed"])
+def test_closed_or_stale_manual_revision_does_not_block_confirmation(workflow, progress_client, state):
+    service, database, dataset_id, images, *_ = workflow
+    _, manual = _confirmed_source_and_manual_revision(workflow)
+    if state in {"cancelled", "deleted"}:
+        service.cancel_run(manual["id"])
+        if state == "deleted":
+            service.delete_run(manual["id"])
+    else:
+        with database.session_factory() as session:
+            if state == "stale":
+                item = session.scalar(select(WorkflowItem).where(WorkflowItem.run_id == manual["id"]))
+                item.context_json = {**item.context_json, "base_revision": -1}
+            else:
+                session.get(WorkflowRun, manual["id"]).status = "completed"
+            session.commit()
+    dataset = progress_client.get("/api/datasets").json()[0]
+    assert dataset["confirmed_image_count"] == 2
+    assert dataset["pending_review_image_count"] == 0
+    with database.session_factory() as session:
+        progress = image_progress(session, [session.get(ImageItem, images[0])])[images[0]]
+        assert progress["workflow_pending"] is progress["has_draft"] is False
+        require_confirmed(session, service.storage, dataset_id)

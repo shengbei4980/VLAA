@@ -12,7 +12,6 @@ export interface VisionEndpoint {
   auth_scheme: LLMAuthScheme;
   auth_header_name: string;
   coordinate_format: "pixel" | "normalized_1" | "normalized_1000";
-  max_image_side: number;
   max_output_tokens: number;
   timeout_seconds: number;
   multi_image: boolean;
@@ -75,8 +74,9 @@ export const visionApi = {
       const {
         api_key_configured: _configured,
         config_hash: _hash,
+        max_image_side: _legacyImageLimit,
         ...fields
-      } = endpoint;
+      } = endpoint as typeof endpoint & { max_image_side?: number };
       return fields;
     };
     return request<VisionSettings>(

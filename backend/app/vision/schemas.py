@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Literal
 from urllib.parse import urlsplit
 
@@ -9,6 +10,8 @@ from app.core.schemas import BBox
 
 VisionRole = Literal["proposer", "reviewer"]
 CoordinateFormat = Literal["pixel", "normalized_1", "normalized_1000"]
+VisionGeometry = Literal["bbox", "polygon"]
+MAX_VISION_POLYGON_POINTS = 1024
 
 
 class VisionEndpoint(BaseModel):
@@ -20,11 +23,19 @@ class VisionEndpoint(BaseModel):
     auth_scheme: Literal["bearer", "header", "raw_authorization"] = "bearer"
     auth_header_name: str = ""
     coordinate_format: CoordinateFormat = "pixel"
-    max_image_side: int = Field(default=1024, ge=64, le=4096)
     max_output_tokens: int = Field(default=4096, ge=128, le=32768)
     timeout_seconds: int = Field(default=60, ge=1, le=7200)
     multi_image: bool = False
     structured_output: Literal["json_schema", "json_object"] = "json_object"
+
+    @model_validator(mode="before")
+    @classmethod
+    def discard_legacy_image_limit(cls, value):
+        # Existing settings and older clients may still contain this retired key.
+        # It must never control image geometry or appear in the public schema.
+        if isinstance(value, dict) and "max_image_side" in value:
+            return {key: item for key, item in value.items() if key != "max_image_side"}
+        return value
 
     @field_validator("api_base")
     @classmethod
@@ -99,6 +110,41 @@ class NativeCandidate(BaseModel):
 class NativeProposal(BaseModel):
     model_config = ConfigDict(extra="forbid")
     objects: list[NativeCandidate] = Field(default_factory=list, max_length=1000)
+    uncertainty: str = Field(default="", max_length=4000)
+
+
+class NativePolygonCandidate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    class_id: str | None
+    polygon: list[tuple[float, float]] | None = Field(default=None, max_length=MAX_VISION_POLYGON_POINTS,
+        description="Ordered [x,y] vertices tracing the visible object boundary in SENT-image coordinates, at least three distinct vertices. Never substitute an enclosing rectangle.")
+    evidence: str = Field(min_length=1, max_length=2000)
+    uncertainty: str = Field(default="", max_length=2000)
+    confidence: float | None = Field(default=None, ge=0, le=1)
+
+    @model_validator(mode="before")
+    @classmethod
+    def isolate_malformed_geometry(cls, value):
+        if isinstance(value, dict):
+            value = dict(value)
+            # A provider may return a box despite the polygon-only schema. Keep
+            # the entry as a visible invalid-contour issue, never a box fallback.
+            value.pop("bbox", None)
+            points = value.get("polygon")
+            try:
+                malformed = (not isinstance(points, (list, tuple)) or len(points) > MAX_VISION_POLYGON_POINTS
+                    or any(not isinstance(point, (list, tuple)) or len(point) != 2
+                           or any(type(number) not in (int, float) or not math.isfinite(number) for number in point) for point in points))
+            except OverflowError:
+                malformed = True
+            if malformed:
+                value["polygon"] = None
+        return value
+
+
+class NativePolygonProposal(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    objects: list[NativePolygonCandidate] = Field(default_factory=list, max_length=1000)
     uncertainty: str = Field(default="", max_length=4000)
 
 

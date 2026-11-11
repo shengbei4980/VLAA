@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { workflowApi } from "../api/workflows";
-import type { WorkflowRun } from "../types/workflows";
+import type { WorkflowReview, WorkflowRun } from "../types/workflows";
 import { runProfile } from "../types/workflows";
 import { ArtifactReviewView } from "./ArtifactReviewView";
 import { apiUrl } from "../api/client";
@@ -42,6 +42,8 @@ export function WorkflowRunView({
   onDirtyChange,
   onDataChanged,
   initialReviewId,
+  onOpenReviewRevision,
+  onEditImage,
 }: {
   runId: string;
   onBack: () => void;
@@ -51,6 +53,8 @@ export function WorkflowRunView({
   onDirtyChange?: (dirty: boolean) => void;
   onDataChanged?: () => void;
   initialReviewId?: string;
+  onOpenReviewRevision?: (review: WorkflowReview) => void;
+  onEditImage?: (datasetId: string, imageId: string) => void;
 }) {
   const [run, setRun] = useState<WorkflowRun>();
   const [reviewId, setReviewId] = useState(initialReviewId ?? "");
@@ -149,6 +153,11 @@ export function WorkflowRunView({
         reviewId={reviewId}
         profile={runProfile(run)}
         onDirtyChange={onDirtyChange}
+        onOpenRevision={onOpenReviewRevision ? (next) => {
+          onDataChanged?.();
+          onOpenReviewRevision(next);
+        } : undefined}
+        onEditImage={onEditImage}
         batchPosition={currentIndex >= 0 ? { index: currentIndex + 1, total: run.items.length, remaining: remainingReviews.length } : undefined}
         onNext={nextReviewId ? () => setReviewId(nextReviewId) : undefined}
         onBack={() => {

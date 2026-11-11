@@ -9,7 +9,8 @@ from PIL import Image
 
 from app.core.errors import ValidationError
 from app.core.schemas import BBox
-from app.vision.schemas import CoordinateFormat, ImageStrategy, VisionObject
+from app.dataset.annotation.geometry import validate_polygon
+from app.vision.schemas import CoordinateFormat, ImageStrategy, MAX_VISION_POLYGON_POINTS, VisionObject
 
 
 def _finite_coordinate(value) -> bool:
@@ -17,6 +18,37 @@ def _finite_coordinate(value) -> bool:
         return type(value) in (int, float) and math.isfinite(value)
     except OverflowError:
         return False
+
+
+def _cross(a: tuple[float, float], b: tuple[float, float], c: tuple[float, float]) -> float:
+    return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+
+
+def _intersects(a: tuple[float, float], b: tuple[float, float], c: tuple[float, float], d: tuple[float, float]) -> bool:
+    if (max(a[0], b[0]) < min(c[0], d[0]) or max(c[0], d[0]) < min(a[0], b[0])
+            or max(a[1], b[1]) < min(c[1], d[1]) or max(c[1], d[1]) < min(a[1], b[1])):
+        return False
+    ab_c, ab_d, cd_a, cd_b = _cross(a, b, c), _cross(a, b, d), _cross(c, d, a), _cross(c, d, b)
+    return ((ab_c <= 0 <= ab_d or ab_d <= 0 <= ab_c)
+            and (cd_a <= 0 <= cd_b or cd_b <= 0 <= cd_a))
+
+
+def _simple_polygon(points: list[tuple[float, float]]) -> bool:
+    count = len(points)
+    if len(set(points)) != count:
+        return False
+    for index, b in enumerate(points):
+        a, c = points[index - 1], points[(index + 1) % count]
+        if _cross(a, b, c) == 0 and (a[0] - b[0]) * (c[0] - b[0]) + (a[1] - b[1]) * (c[1] - b[1]) > 0:
+            return False
+    for index in range(count):
+        a, b = points[index], points[(index + 1) % count]
+        for other in range(index + 2, count):
+            if index == 0 and other == count - 1:
+                continue
+            if _intersects(a, b, points[other], points[(other + 1) % count]):
+                return False
+    return True
 
 
 @dataclass(frozen=True)
@@ -110,8 +142,62 @@ class ImageView:
             y1, y2 = y1 * factor / self.sent_height, y2 * factor / self.sent_height
         return x1, y1, x2, y2
 
+    def original_polygon(self, points, coordinate_format: CoordinateFormat) -> list[tuple[float, float]]:
+        def invalid(reason: str) -> ValidationError:
+            native = [
+                [value if _finite_coordinate(value) else str(value)[:128] for value in point[:3]]
+                if isinstance(point, (list, tuple)) else str(point)[:256]
+                for point in points[:32]
+            ] if isinstance(points, (list, tuple)) else str(points)[:256]
+            return ValidationError("vision_polygon_invalid", "Vision polygon is missing, malformed, out of bounds or self-intersecting.",
+                details={"native_polygon": native, "point_count": len(points) if isinstance(points, (list, tuple)) else 0,
+                         "reason": reason, "view_id": self.view_id, "coordinate_format": coordinate_format,
+                         "sent_size": [self.sent_width, self.sent_height],
+                         "original_size": [self.original_width, self.original_height], "crop": list(self.crop),
+                         "source_frame": "sent_image"})
 
-def prepare_views(content: bytes, strategy: ImageStrategy, max_side: int) -> tuple[str, list[ImageView]]:
+        if (coordinate_format not in ("pixel", "normalized_1", "normalized_1000")
+                or not isinstance(points, (list, tuple)) or not 3 <= len(points) <= MAX_VISION_POLYGON_POINTS
+                or any(not isinstance(point, (list, tuple)) or len(point) != 2
+                       or any(not _finite_coordinate(value) for value in point) for point in points)):
+            raise invalid("invalid_vertices")
+        factor_x, factor_y = 1.0, 1.0
+        if coordinate_format != "pixel":
+            divisor = 1 if coordinate_format == "normalized_1" else 1000
+            factor_x, factor_y = self.sent_width / divisor, self.sent_height / divisor
+        sent = [(x * factor_x, y * factor_y) for x, y in points]
+        tolerance = 1e-6
+        if any(not all(math.isfinite(value) for value in point)
+               or x < -tolerance or y < -tolerance
+               or x > self.sent_width + tolerance or y > self.sent_height + tolerance
+               for point in sent for x, y in [point]):
+            raise invalid("out_of_bounds")
+        sent = [(max(0.0, min(x, self.sent_width)), max(0.0, min(y, self.sent_height))) for x, y in sent]
+        if sent[0] == sent[-1]:
+            sent.pop()
+        if len(sent) < 3 or not _simple_polygon(sent):
+            raise invalid("degenerate_or_self_intersecting")
+        left, top, right, bottom = self.crop
+        original = [(left + x * (right - left) / self.sent_width,
+                     top + y * (bottom - top) / self.sent_height) for x, y in sent]
+        try:
+            validate_polygon(original, self.original_width, self.original_height)
+        except ValidationError as error:
+            raise invalid(error.error_code) from error
+        return original
+
+    def sent_polygon(self, points: list[tuple[float, float]], coordinate_format: CoordinateFormat) -> list[tuple[float, float]] | None:
+        """Project only complete contours; a crop must not invent closing edges."""
+        left, top, right, bottom = self.crop
+        if any(x < left or y < top or x > right or y > bottom for x, y in points):
+            return None
+        factor = 1 if coordinate_format == "normalized_1" else 1000
+        if coordinate_format == "pixel":
+            return [((x - left) * self.sent_width / (right - left), (y - top) * self.sent_height / (bottom - top)) for x, y in points]
+        return [((x - left) * factor / (right - left), (y - top) * factor / (bottom - top)) for x, y in points]
+
+
+def prepare_views(content: bytes, strategy: ImageStrategy) -> tuple[str, list[ImageView]]:
     try:
         with Image.open(io.BytesIO(content)) as source:
             width, height = source.size
@@ -137,7 +223,6 @@ def prepare_views(content: bytes, strategy: ImageStrategy, max_side: int) -> tup
     views = []
     for index, (crop, overview) in enumerate(unique.items()):
         view = image.crop(crop)
-        view.thumbnail((max_side, max_side), Image.Resampling.LANCZOS)
         output = io.BytesIO()
         view.save(output, format="PNG")
         views.append(ImageView(f"view_{index}", output.getvalue(), width, height, crop, view.width, view.height, overview))
@@ -152,9 +237,17 @@ def box_iou(left: BBox, right: BBox) -> float:
 
 
 def merge_candidates(objects: list[VisionObject], threshold: float) -> list[VisionObject]:
+    def contour_key(points: list[tuple[float, float]]) -> tuple[tuple[float, float], ...]:
+        first = min(range(len(points)), key=points.__getitem__)
+        forward = tuple(points[first:] + points[:first])
+        reverse = (forward[0], *reversed(forward[1:]))
+        return min(forward, reverse)
+
     merged: list[VisionObject] = []
     for candidate in objects:
-        duplicate = next((item for item in merged if item.class_id == candidate.class_id and box_iou(item.bbox, candidate.bbox) >= threshold), None)
+        duplicate = next((item for item in merged if item.class_id == candidate.class_id and (
+            bool(item.polygon) and contour_key(item.polygon) == contour_key(candidate.polygon)
+            if candidate.polygon else not item.polygon and box_iou(item.bbox, candidate.bbox) >= threshold)), None)
         if duplicate is None:
             merged.append(candidate)
         else:

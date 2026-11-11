@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ArtifactReviewView } from "./ArtifactReviewView";
 import { workflowApi } from "../api/workflows";
+import { ApiError } from "../api/client";
 import { annotationPreview } from "../workflow/annotation-preview";
 import { visionApi } from "../api/vision";
 import { encodeMask } from "../workflow/masks";
@@ -29,6 +30,7 @@ type MaskCanvasProps = {
 vi.mock("../api/workflows", () => ({
   workflowApi: {
     review: vi.fn(),
+    continueEditing: vi.fn(),
     saveDraft: vi.fn(),
     savePreview: vi.fn(),
     exportLabelMe: vi.fn(),
@@ -198,7 +200,7 @@ const button = (label: string) =>
   Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
     (item) => item.textContent === label,
   )!;
-const render = async (taskProfile = profile, onDirtyChange?: (dirty: boolean) => void, onNext?: () => void) => {
+const render = async (taskProfile = profile, onDirtyChange?: (dirty: boolean) => void, onNext?: () => void, onOpenRevision?: (value: WorkflowReview) => void, onEditImage?: (datasetId: string, imageId: string) => void) => {
   await act(async () =>
     root.render(
       <ArtifactReviewView
@@ -208,12 +210,76 @@ const render = async (taskProfile = profile, onDirtyChange?: (dirty: boolean) =>
         onSaved={vi.fn()}
         onDirtyChange={onDirtyChange}
         onNext={onNext}
+        onOpenRevision={onOpenRevision}
+        onEditImage={onEditImage}
       />,
     ),
   );
 };
 
 describe("human review gate", () => {
+  it("opens a new manual revision before allowing edits to a confirmed image", async () => {
+    const original = { ...review, status: "decided", decision: "approved" };
+    const next = { ...review, id: "review-next", run_id: "run-next", base_revision: 3 };
+    vi.mocked(workflowApi.review).mockImplementation(async (id) => id === "review-next" ? next : original);
+    let finish!: (value: WorkflowReview) => void;
+    vi.mocked(workflowApi.continueEditing).mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    const opened = vi.fn(async (value: WorkflowReview) => {
+      root.render(<ArtifactReviewView key={value.id} reviewId={value.id} profile={segmentProfile} onBack={vi.fn()} onSaved={vi.fn()} />);
+    });
+    await render(segmentProfile, undefined, undefined, opened);
+    expect((maskCanvasProps.mock.lastCall![0] as MaskCanvasProps).disabled).toBe(true);
+    await act(async () => button("继续修改").click());
+    expect(workflowApi.continueEditing).toHaveBeenCalledWith("review-1", 1);
+    expect(button("正在打开编辑…").disabled).toBe(true);
+    act(() => button("正在打开编辑…").click());
+    expect(workflowApi.continueEditing).toHaveBeenCalledTimes(1);
+    expect(workflowApi.saveDraft).not.toHaveBeenCalled();
+    await act(async () => finish(next));
+    expect(opened).toHaveBeenCalledWith(next);
+    expect((maskCanvasProps.mock.lastCall![0] as MaskCanvasProps).disabled).toBe(false);
+    await act(async () => button("完成测试轮廓").click());
+    await act(async () => button("保存修改").click());
+    expect(workflowApi.saveDraft).toHaveBeenCalledWith("review-next", 1, expect.objectContaining({ objects: expect.arrayContaining([expect.objectContaining({ object_id: "drawn-object" })]) }));
+    expect(workflowApi.decide).not.toHaveBeenCalled();
+  });
+
+  it.each(["approved", "background"])("offers continued editing for a %s review", async (status) => {
+    vi.mocked(workflowApi.review).mockResolvedValue({ ...review, status });
+    await render(segmentProfile, undefined, undefined, vi.fn());
+    expect(button("继续修改").disabled).toBe(false);
+  });
+
+  it("keeps excluded images read only without offering a manual revision", async () => {
+    vi.mocked(workflowApi.review).mockResolvedValue({ ...review, status: "decided", decision: "excluded" });
+    await render(segmentProfile, undefined, undefined, vi.fn());
+    expect(button("继续修改")).toBeUndefined();
+    expect((maskCanvasProps.mock.lastCall![0] as MaskCanvasProps).disabled).toBe(true);
+  });
+
+  it.each([404, 409, 500])("keeps failed reopening read only and limits the dataset fallback to HTTP 404 (%s)", async (status) => {
+    vi.mocked(workflowApi.review).mockResolvedValue({ ...review, status: "decided", decision: "approved" });
+    vi.mocked(workflowApi.continueEditing).mockRejectedValue(new ApiError(status, status === 404 ? "Not Found" : "版本已更新"));
+    const opened = vi.fn();
+    const editImage = vi.fn();
+    await render(segmentProfile, undefined, undefined, opened, editImage);
+    await act(async () => button("继续修改").click());
+    expect(opened).not.toHaveBeenCalled();
+    expect((maskCanvasProps.mock.lastCall![0] as MaskCanvasProps).disabled).toBe(true);
+    expect(button("继续修改").disabled).toBe(false);
+    expect(editImage).not.toHaveBeenCalled();
+    if (status === 404) {
+      expect(container.textContent).toContain("后端需重启");
+      expect(container.textContent).toContain("当前服务尚未提供新修订接口");
+      expect(container.textContent).not.toContain("Not Found");
+      await act(async () => button("在数据集编辑器中继续修改").click());
+      expect(editImage).toHaveBeenCalledWith("dataset-1", "image-1");
+    } else {
+      expect(button("在数据集编辑器中继续修改")).toBeUndefined();
+      expect(container.textContent).toContain("版本已更新");
+    }
+  });
+
   it("confirms a checked image without filling six advisory conclusions or inventing resolutions", async () => {
     const issues = Array.from({ length: 6 }, (_, index) => ({ id: `issue-${index}`, type: "boundary", message: `检查边界 ${index + 1}` }));
     vi.mocked(workflowApi.review).mockResolvedValue({ ...review, payload: { ...payload, issues } });

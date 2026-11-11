@@ -43,7 +43,11 @@ def image_progress(session: Session, images: list[ImageItem]) -> dict[str, dict]
         if item.subject_ref in selected:
             continue
         nodes = run.template_snapshot.get("nodes", [])
-        if any(node.get("type") in {"vision_propose", "managed_inference"} for node in nodes):
+        # Continuing a confirmed annotation opens a manual revision without
+        # calling a model. It still supersedes the applied receipt until review.
+        annotation_edit_of = run.context_json.get("annotation_edit_of")
+        manual_revision = isinstance(annotation_edit_of, str) and bool(annotation_edit_of.strip())
+        if manual_revision or any(node.get("type") in {"vision_propose", "managed_inference"} for node in nodes):
             selected[item.subject_ref] = (item, run)
     item_ids = [item.id for item, _ in selected.values()]
     artifacts, reviews = {}, {}

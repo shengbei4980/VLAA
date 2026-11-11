@@ -49,6 +49,10 @@ class TaskProfileConfig(Contract):
         expected = {"detect": "bbox", "segment": "mask", "obb": "obb", "classify": "classify"}
         if self.geometry != expected[self.task_type]:
             raise ValueError("Task type and annotation geometry must match.")
+        if self.task_type == "segment":
+            segmenter = self.models.get("segmenter", "sam")
+            if not isinstance(segmenter, str) or segmenter not in {"sam", "vision_llm"}:
+                raise ValueError("Choose SAM or direct vision LLM contours for segmentation.")
         return self
 
 
@@ -102,6 +106,10 @@ class RunCreate(Contract):
 class ReviewDraft(Contract):
     expected_revision: int = Field(ge=1)
     payload: dict[str, Any]
+
+
+class ContinueReviewEditing(Contract):
+    expected_revision: int = Field(ge=1)
 
 
 class ReviewDecision(Contract):

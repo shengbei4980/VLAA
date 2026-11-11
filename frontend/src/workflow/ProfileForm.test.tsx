@@ -182,6 +182,46 @@ afterEach(() => {
 });
 
 describe("类别与模型方案表单", () => {
+  it("新建分割方案默认由视觉 LLM 直接画轮廓，并可切换到 SAM", async () => {
+    const segmentDataset = { ...dataset, task_type: "segment" as const };
+    const { container } = await mount(undefined, segmentDataset.id, [segmentDataset]);
+    const source = control<HTMLSelectElement>(container, "分割轮廓来源");
+    expect(source.value).toBe("vision_llm");
+    expect(source.closest("details")).toBeNull();
+    expect(container.textContent).toContain("所选视觉服务需支持输出多边形坐标");
+    await act(async () => Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "读取数据集类别")!.click());
+    await submit(container);
+    expect(vi.mocked(workflowApi.saveProfile).mock.lastCall![0].config.models.segmenter).toBe("vision_llm");
+    change(source, "sam");
+    expect(container.textContent).toContain("SAM 辅助");
+    await submit(container);
+    expect(vi.mocked(workflowApi.saveProfile).mock.lastCall![0].config.models.segmenter).toBe("sam");
+  });
+
+  it.each(["sam", undefined])("旧分割方案保留原有轮廓来源（%s），只有主动修改后才切换", async (segmenter) => {
+    const source = profile();
+    source.config.task_type = "segment";
+    source.config.geometry = "mask";
+    if (segmenter) source.config.models.segmenter = segmenter;
+    else delete source.config.models.segmenter;
+    const original = structuredClone(source);
+    const { container } = await mount(source, dataset.id, [{ ...dataset, task_type: "segment" }]);
+    const select = control<HTMLSelectElement>(container, "分割轮廓来源");
+    expect(select.value).toBe("sam");
+    await submit(container);
+    expect(vi.mocked(workflowApi.saveProfile).mock.lastCall![0].config.models.segmenter).toBe(segmenter);
+    change(select, "vision_llm");
+    await submit(container);
+    expect(vi.mocked(workflowApi.saveProfile).mock.lastCall![0].config.models.segmenter).toBe("vision_llm");
+    expect(source).toEqual(original);
+  });
+
+  it("新建方案从检测改为分割时选择 LLM 直接轮廓", async () => {
+    const { container } = await mount();
+    change(control<HTMLSelectElement>(container, "想识别什么"), "segment");
+    expect(control<HTMLSelectElement>(container, "分割轮廓来源").value).toBe("vision_llm");
+  });
+
   it("单独移除类别后添加其他类别，保存仍只包含所选类别与说明", async () => {
     const source = profile();
     const retained = {

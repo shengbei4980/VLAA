@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from copy import deepcopy
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -13,7 +14,7 @@ from sqlalchemy.orm import aliased, defer
 from app.agent.redaction import redact_text
 from app.core.errors import ConflictError, DomainError, NotFoundError, ValidationError
 from app.core.ids import new_id
-from app.core.models import ClassLabel, Dataset, ImageItem
+from app.core.models import AnnotationDraft, ClassLabel, Dataset, ImageItem
 from app.core.storage import Storage
 from app.core.time import utc_now
 from app.dataset.annotation.service import list_annotations
@@ -33,6 +34,7 @@ from app.workflow.progress import run_progress
 logger = logging.getLogger("ywa.workflow")
 TERMINAL = {"completed", "cancelled"}
 RESERVED_PAYLOAD = {"image_id", "dataset_id", "image_hash", "image_url", "width", "height", "base_revision"}
+MANUAL_REVIEW_TEMPLATE = "_manual_review_revision_v1"
 
 
 class WorkflowService:
@@ -132,7 +134,8 @@ class WorkflowService:
 
     def list_templates(self) -> list[dict]:
         with self.session_factory() as session:
-            return [self._template(row) for row in session.scalars(select(WorkflowTemplate).order_by(WorkflowTemplate.key, WorkflowTemplate.version.desc()))]
+            return [self._template(row) for row in session.scalars(select(WorkflowTemplate).where(
+                WorkflowTemplate.key != MANUAL_REVIEW_TEMPLATE).order_by(WorkflowTemplate.key, WorkflowTemplate.version.desc()))]
 
     def get_template(self, template_id: str) -> dict:
         with self.session_factory() as session:
@@ -150,6 +153,8 @@ class WorkflowService:
         return row
 
     def create_template(self, payload: TemplateCreate) -> dict:
+        if payload.key == MANUAL_REVIEW_TEMPLATE:
+            raise ValidationError("workflow_reserved_template", "This template key is reserved for continued annotation editing.")
         with self.session_factory() as session:
             row = self._create_template(session, payload)
             session.commit()
@@ -201,7 +206,8 @@ class WorkflowService:
                 approvals[role] = {key: config[key] for key in ("mode", "api_base", "model", "config_hash")}
                 approvals[role].update(allowed_image_hashes=sorted(hashes), max_requests=min(10000, profile.config_json.get("max_requests", 1000)))
             sam_config = None
-            if dataset.task_type == "segment" and any(node["type"] in {"segment_proposals", "repair_proposals"} for node in template.nodes_json):
+            if (dataset.task_type == "segment" and profile.config_json.get("models", {}).get("segmenter", "sam") != "vision_llm"
+                    and any(node["type"] in {"segment_proposals", "repair_proposals"} for node in template.nodes_json)):
                 if self.bindings.sam_resolver is None:
                     raise ValidationError("workflow_segmenter_unavailable", "SAM configuration preview is unavailable for this workflow.")
                 sam_config = self.bindings.sam_resolver()
@@ -211,6 +217,8 @@ class WorkflowService:
             request["inputs"] = {**payload.inputs, "vision_approvals": approvals,
                                  **({"sam_config": sam_config} if sam_config is not None else {}),
                                  "approved_output_destinations": outputs}
+            if dataset.task_type == "segment" and profile.config_json.get("models", {}).get("segmenter", "sam") == "vision_llm":
+                request["inputs"].pop("sam_config", None)
             return {"request": request, "vision_approvals": approvals, "scope": scope,
                     "sam_config": sam_config, "outputs": outputs, "profile_snapshot": profile.config_json, "template_snapshot": template.nodes_json}
 
@@ -804,6 +812,111 @@ class WorkflowService:
 
             result.update(project=outputs["project"], export_locations=project_export_locations(outputs))
         return result
+
+    def continue_editing(self, review_id: str, expected_revision: int) -> dict:
+        """Fork current formal labels into a manual revision without reopening old results."""
+        from app.dataset.annotation.review import current_content
+        from app.workflow.projects import resolve_run_outputs
+
+        with self.session_factory() as session:
+            source = self._row(session, WorkflowReview, review_id)
+            session.execute(update(WorkflowRun).where(WorkflowRun.id == source.run_id).values(updated_at=utc_now()))
+            session.refresh(source)
+            source_run = self._row(session, WorkflowRun, source.run_id)
+            if source_run.deleted_at is not None:
+                raise ConflictError("workflow_run_deleted", "Restore this run before continuing its annotations.")
+            if source.revision != expected_revision:
+                raise ConflictError("workflow_review_stale", "The reviewed draft changed. Reload its current revision.")
+            if source.status != "decided" or source.decision not in {"approved", "background"}:
+                raise ConflictError("workflow_review_not_confirmed", "Only confirmed annotations can start a continued editing revision.")
+            source_item = self._row(session, WorkflowItem, source.item_id)
+            # Serialize revisions from different source runs of the same image too.
+            session.execute(update(ImageItem).where(ImageItem.id == source_item.subject_ref).values(updated_at=utc_now()))
+            image = self._row(session, ImageItem, source_item.subject_ref)
+            session.refresh(image)
+            content = current_content(session, self.storage, image)
+            if content["image_hash"] != source_item.context_json["image_hash"]:
+                raise ConflictError("workflow_image_changed", "The original image changed. Start a new annotation run for this image.")
+            if session.get(AnnotationDraft, image.id) is not None:
+                raise ConflictError("annotation_draft_pending", "This image already has an editor draft. Save or discard that draft first.")
+            active = session.execute(select(WorkflowItem, WorkflowRun).join(WorkflowRun, WorkflowRun.id == WorkflowItem.run_id).where(
+                WorkflowItem.subject_ref == image.id, WorkflowItem.confirmed.is_(False),
+                WorkflowItem.status.not_in(["excluded", "cancelled"]), WorkflowRun.deleted_at.is_(None),
+                WorkflowRun.cancel_requested.is_(False), WorkflowRun.status.not_in(TERMINAL),
+            ).order_by(WorkflowRun.created_at.desc(), WorkflowRun.id.desc())).first()
+            if active is not None:
+                active_item, active_run = active
+                pending = session.scalar(select(WorkflowReview).where(
+                    WorkflowReview.item_id == active_item.id, WorkflowReview.status == "pending",
+                ).order_by(WorkflowReview.created_at.desc()).limit(1))
+                if (pending is not None and pending.base_revision == image.annotation_revision
+                        and active_item.context_json.get("image_hash") == content["image_hash"]):
+                    # Returning its latest revision also makes duplicate clicks safe.
+                    return self._review_response(session, pending)
+                raise ConflictError("workflow_edit_already_pending", "This image already has unfinished annotation work. Open its latest run first.")
+
+            nodes = [NodeDefinition(id="confirm", type="human_review"),
+                     NodeDefinition(id="snapshot", type="snapshot", scope="batch"),
+                     NodeDefinition(id="export", type="export", scope="batch", inputs={"snapshot": "snapshot"})]
+            template = session.scalar(select(WorkflowTemplate).where(WorkflowTemplate.key == MANUAL_REVIEW_TEMPLATE)
+                                      .order_by(WorkflowTemplate.version.desc()).limit(1))
+            if template is None or template.nodes_json != [node.model_dump(mode="json") for node in nodes]:
+                template = self._create_template(session, TemplateCreate(
+                    key=MANUAL_REVIEW_TEMPLATE, name="继续修改已确认标注", nodes=nodes))
+            profile = deepcopy(source_run.profile_snapshot)
+            old_rules = {rule.get("class_id", rule.get("id")): rule for rule in profile.get("class_rules", [])}
+            profile["class_rules"] = [{**old_rules.get(row["id"], {}), "id": row["id"], "class_id": row["id"], "name": row["name"]}
+                                      for row in content["classes"]]
+            profile["task_type"] = content["task_type"]
+            profile["geometry"] = {"detect": "bbox", "segment": "mask", "obb": "obb", "classify": "classify"}[content["task_type"]]
+            profile["repair_limit"] = 0
+            profile["rules"] = {**profile.get("rules", {}), **content["rules"], "classes": profile["class_rules"]}
+            run_id = new_id("wrun")
+            outputs = resolve_run_outputs(self.project_root, profile.get("outputs"), source_run.context_json.get("project_id"), run_id=run_id)
+            previous_outputs = source_run.context_json.get("output_destinations", {})
+            for kind in ("annotations", "models", "evaluations"):
+                if previous_outputs.get(kind, {}).get("path") != outputs.get(kind, {}).get("path"):
+                    raise ConflictError("workflow_output_destination_changed", "The registered output destination changed. Restore its original location before continuing editing.")
+            context = {"dataset_id": image.dataset_id, "image_ids": [image.id], "snapshot_id": None, "next_batches": [],
+                       "project_id": source_run.context_json.get("project_id"), "output_destinations": outputs,
+                       "annotation_edit_of": source.id, "source_run_id": source_run.id,
+                       "source_review_revision": source.revision, "source_annotation_revision": image.annotation_revision,
+                       "source_content_fingerprint": fingerprint(content)}
+            run = WorkflowRun(id=run_id, idempotency_key=f"manual-edit:{run_id}", fingerprint=fingerprint(context),
+                              template_id=template.id, profile_id=source_run.profile_id,
+                              template_snapshot={"key": template.key, "name": template.name, "version": template.version, "nodes": template.nodes_json},
+                              profile_snapshot=profile, context_json=context, status="awaiting_review", generation=1)
+            session.add(run)
+            session.flush()
+            annotations = deepcopy(content["annotations"])
+            for annotation in annotations:
+                annotation["object_id"] = annotation.get("object_id") or new_id("object")
+            item_context = {"image_id": image.id, "dataset_id": image.dataset_id, "image_hash": content["image_hash"],
+                            "image_path": str(self.storage.image_path(image.dataset_id, image.storage_name)),
+                            "image_url": f"/api/images/{image.id}/file", "width": image.width, "height": image.height,
+                            "base_revision": image.annotation_revision, "existing_annotations": annotations,
+                            "roi_mask_ref": content["roi_mask_ref"], "ignore_mask_ref": content["ignore_mask_ref"]}
+            item = WorkflowItem(id=new_id("witem"), run_id=run.id, subject_ref=image.id,
+                                context_json=item_context, status="awaiting_review")
+            session.add(item)
+            session.flush()
+            attempt_context = self._context(session, run, item, nodes[0])
+            proposals = self._validate_proposals(attempt_context)
+            proposals["revision"] = 1
+            attempt_context["payload"] = proposals
+            attempt = WorkflowAttempt(id=new_id("wattempt"), run_id=run.id, item_id=item.id, unit_key=item.id,
+                                      node_id=nodes[0].id, node_type="human_review", attempt=1, generation=1,
+                                      fingerprint=fingerprint(attempt_context), status="awaiting_review", input_json=attempt_context)
+            session.add(attempt)
+            session.flush()
+            artifact = self._artifact(session, run.id, item.id, attempt.id, "review_proposals", proposals, [source.artifact_id])
+            review = WorkflowReview(id=new_id("wreview"), run_id=run.id, item_id=item.id,
+                                    attempt_id=attempt.id, artifact_id=artifact.id, revision=1, base_revision=image.annotation_revision)
+            session.add(review)
+            self._event(session, run.id, "annotation_edit_started", {"review_id": review.id, "source_review_id": source.id,
+                        "source_run_id": source_run.id, "base_revision": image.annotation_revision, "image_hash": content["image_hash"]})
+            session.commit()
+            return self._review_response(session, review)
 
     def save_review(self, review_id: str, payload: ReviewDraft):
         with self.session_factory() as session:
