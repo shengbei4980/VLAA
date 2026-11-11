@@ -1,10 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { workflowApi } from "../api/workflows";
 import type { WorkflowRun } from "../types/workflows";
 import { runProfile } from "../types/workflows";
 import { ArtifactReviewView } from "./ArtifactReviewView";
 import { apiUrl } from "../api/client";
 import { BatchExportPanel } from "../workflow/BatchExportPanel";
+import { WorkflowProgressPanel } from "../workflow/WorkflowProgressPanel";
 import {
   nodeDescription,
   nodeLabel,
@@ -55,35 +56,59 @@ export function WorkflowRunView({
   const [reviewId, setReviewId] = useState(initialReviewId ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const refresh = async () => setRun(await workflowApi.run(runId));
+  const [connectionError, setConnectionError] = useState("");
+  const [imageFilter, setImageFilter] = useState("all");
+  const [visibleImages, setVisibleImages] = useState(50);
+  const pollState = useRef({ status: "", reviewId: "" });
+  const requestSequence = useRef(0);
+  pollState.current = { status: run?.status ?? "", reviewId };
+  const refresh = async () => {
+    const sequence = ++requestSequence.current;
+    const result = await workflowApi.run(runId);
+    if (sequence === requestSequence.current) {
+      setRun(result);
+      setConnectionError("");
+    }
+  };
   useEffect(() => {
     setRun(undefined);
     setReviewId(initialReviewId ?? "");
+    setImageFilter("all");
+    setVisibleImages(50);
+    setError("");
+    setConnectionError("");
     let active = true;
     let pending = false;
     const poll = async () => {
       if (pending) return;
       pending = true;
+      const sequence = ++requestSequence.current;
       try {
         const result = await workflowApi.run(runId);
-        if (active) {
+        if (active && sequence === requestSequence.current) {
           setRun(result);
-          setError("");
+          setConnectionError("");
         }
       } catch (reason) {
-        if (active)
-          setError(reason instanceof Error ? reason.message : "运行读取失败");
+        if (active && sequence === requestSequence.current)
+          setConnectionError(reason instanceof Error ? reason.message : "运行读取失败");
       } finally {
         pending = false;
       }
     };
     void poll();
     const timer = window.setInterval(() => {
-      if (!document.hidden) void poll();
+      if (!document.hidden && !pollState.current.reviewId && !terminal.has(pollState.current.status)) void poll();
     }, 2000);
+    const onVisible = () => {
+      if (!document.hidden && !pollState.current.reviewId) void poll();
+    };
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
       active = false;
+      requestSequence.current++;
       window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
     };
   }, [runId]);
   useEffect(() => {
@@ -153,6 +178,16 @@ export function WorkflowRunView({
   const hasExport = run?.artifacts.some(
     (artifact) => artifact.kind === "export",
   );
+  const matchesFilter = (item: WorkflowRun["items"][number], filter: string) => {
+    if (filter === "review") {
+      const review = latestReviews.get(item.id);
+      return !!review && !["approved", "background", "excluded", "decided"].includes(review.status);
+    }
+    if (filter === "failed") return ["failed", "needs_attention", "interrupted"].includes(item.status);
+    if (filter === "processing") return ["pending", "running", "waiting_task"].includes(item.status);
+    return true;
+  };
+  const filteredImages = run?.items.map((item, index) => ({ item, index })).filter(({ item }) => matchesFilter(item, imageFilter)) ?? [];
   return (
     <main className="workflow-page workflow-run-page">
       <header className="workflow-heading">
@@ -211,11 +246,13 @@ export function WorkflowRunView({
         </div>
       </header>
       {error && <WorkflowErrorMessage message={error} />}
+      {connectionError && <div role="alert" className="validation invalid">进度更新中断，保留上次读取的状态；连接恢复后会继续更新。{connectionError}</div>}
       {run?.error_message && (
         <WorkflowErrorMessage message={run.error_message} />
       )}
       {run && (
         <>
+          <WorkflowProgressPanel run={run} disconnected={!!connectionError} />
           <section
             className="workflow-next-action"
             aria-labelledby="workflow-next-action-title"
@@ -337,6 +374,8 @@ export function WorkflowRunView({
                   attempts.map((attempt) => [attempt.item_id ?? null, attempt]),
                 );
                 const currentAttempts = Array.from(latestByItem.values());
+                const skipped = node.scope === "item" ? run.items.filter((item) => !latestByItem.has(item.id) && (item.cursor ?? 0) > index).length : 0;
+                const notStarted = node.scope === "item" ? Math.max(0, run.items.length - currentAttempts.length - skipped) : 0;
                 const statusCounts = new Map<string, number>();
                 for (const attempt of currentAttempts) {
                   statusCounts.set(
@@ -361,7 +400,7 @@ export function WorkflowRunView({
                         : (currentAttempts.find(
                             (attempt) => attempt.status !== "completed",
                           )?.status ??
-                          (currentAttempts.length ? "completed" : "pending"))
+                          ((currentAttempts.length || skipped) && !notStarted ? "completed" : "pending"))
                     }
                   >
                     <strong>
@@ -374,12 +413,12 @@ export function WorkflowRunView({
                     <span className="workflow-step-status">
                       {unnecessary
                         ? "此任务无需此步"
-                        : currentAttempts.length
+                        : currentAttempts.length || skipped
                           ? Array.from(
                               statusCounts,
                               ([status, count]) =>
                                 `${workflowStatus(status)}${node.scope === "item" ? ` ${count} 张` : ""}`,
-                            ).join(" · ")
+                            ).concat(skipped ? [`按流程跳过 ${skipped} 张`] : []).join(" · ") + (notStarted ? ` · 尚未到此步 ${notStarted} 张` : "")
                           : "等待前面的步骤完成"}
                     </span>
                     <details>
@@ -426,7 +465,14 @@ export function WorkflowRunView({
           </section>
           <section className="panel workflow-form" id="workflow-images">
             <h2>逐张图片检查</h2>
-            {run.items.map((item, index) => {
+            <div className="workflow-image-filters" role="group" aria-label="按图片状态筛选">
+              {[["all", "全部"], ["review", "待复核"], ["failed", "失败"], ["processing", "处理中"]].map(([value, label]) => (
+                <button key={value} className="button" aria-pressed={imageFilter === value} onClick={() => { setImageFilter(value); setVisibleImages(50); }}>
+                  {label} <span>{run.items.filter((item) => matchesFilter(item, value)).length}</span>
+                </button>
+              ))}
+            </div>
+            {filteredImages.slice(0, visibleImages).map(({ item, index }) => {
               const review = latestReviews.get(item.id);
               const context =
                 item.context && typeof item.context === "object"
@@ -445,6 +491,7 @@ export function WorkflowRunView({
                     )}
                     <div>
                       <strong>第 {index + 1} 张图片</strong>
+                      {item.file_name && <span className="workflow-file-name">{item.file_name}</span>}
                       <span>{workflowStatus(item.status)}</span>
                       <details>
                         <summary>查看图片编号</summary>
@@ -485,7 +532,8 @@ export function WorkflowRunView({
                 </article>
               );
             })}
-            {!run.items.length && <p>尚未产生处理单元。</p>}
+            {!filteredImages.length && <p className="workflow-empty-note">{run.items.length ? "此状态下暂无图片。" : "尚未产生处理单元。"}</p>}
+            {filteredImages.length > visibleImages && <button className="button" onClick={() => setVisibleImages((count) => count + 50)}>再显示 50 张（已显示 {visibleImages} / {filteredImages.length}）</button>}
           </section>
           <section className="panel workflow-form" id="workflow-results">
             <h2>查看训练与结果</h2>
@@ -649,7 +697,7 @@ export function WorkflowRunView({
               </pre>
             </details>
             <details>
-              <summary>运行事件（{run.events.length}）</summary>
+              <summary>最近运行事件（{run.events.length}，最多显示 100 条）</summary>
               <pre>{JSON.stringify(run.events, null, 2)}</pre>
             </details>
           </section>

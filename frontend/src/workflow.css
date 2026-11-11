@@ -218,6 +218,51 @@
   color: #92400e;
   background: #fff7e6;
 }
+.workflow-progress-panel {
+  padding: 26px 28px;
+  margin-bottom: 20px;
+  border: 1px solid #d2deed;
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 4px 18px #243c6406;
+}
+.workflow-progress-heading {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 18px;
+}
+.workflow-progress-heading > div { min-width: 0; }
+.workflow-progress-heading h2 { margin: 9px 0; font-size: 23px; letter-spacing: -.4px; }
+.workflow-progress-current { color: #52657e; font-size: 13px; overflow-wrap: anywhere; line-height: 1.8; }
+.workflow-live-label { display: flex; align-items: center; gap: 7px; color: #52657e; font-size: 12px; flex-shrink: 0; }
+.workflow-live-label i { width: 7px; height: 7px; border-radius: 50%; background: #8292a5; }
+.workflow-progress-panel[data-active="true"] .workflow-live-label i { background: #2563eb; animation: workflow-live-pulse 2s ease-in-out infinite; }
+@keyframes workflow-live-pulse { 50% { box-shadow: 0 0 0 4px #2563eb20; } }
+.workflow-progress-caption { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; margin-top: 20px; color: #52657e; font-size: 13px; font-variant-numeric: tabular-nums; }
+.workflow-progress-caption strong { font-size: 26px; color: #1e40af; }
+.workflow-progress-track { height: 10px; overflow: hidden; background: #eaf0f7; border-radius: 6px; margin-top: 10px; }
+.workflow-progress-track > div { height: 100%; background: #3157d5; border-radius: inherit; transition: width .25s ease; }
+.workflow-progress-note { font-size: 12px; color: #64748b; line-height: 1.8; margin: 9px 0 0; }
+.workflow-progress-metrics { display: grid; grid-template-columns: 1fr 1.3fr 1fr; gap: 24px; padding: 23px 0; margin: 16px 0 0; border-top: 1px solid #e7edf5; }
+.workflow-progress-metrics > div { min-width: 0; }
+.workflow-progress-metrics dt { color: #52657e; font-size: 12px; }
+.workflow-progress-metrics dd { font-size: 21px; font-weight: 650; font-variant-numeric: tabular-nums; line-height: 1.6; margin: 7px 0 3px; color: #213553; overflow-wrap: anywhere; }
+.workflow-progress-metrics dd span { color: #c0cbd8; font-weight: 400; }
+.workflow-progress-metrics small { font-size: 12px; color: #64748b; line-height: 1.7; font-weight: 400; }
+.workflow-progress-stages { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 15px; list-style: none; margin: 0; padding: 15px 0; border-top: 1px solid #e7edf5; border-bottom: 1px solid #e7edf5; }
+.workflow-progress-stages li { display: flex; align-items: center; gap: 9px; font-size: 13px; color: #64748b; }
+.workflow-progress-stages li span { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 50%; background: #f1f5f9; font-size: 11px; flex-shrink: 0; }
+.workflow-progress-stages li[data-done="true"] { color: #176447; }
+.workflow-progress-stages li[data-done="true"] span { background: #e7f5ec; }
+.workflow-image-filters { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+.workflow-image-filters .button[aria-pressed="true"] { border-color: #3157d5; background: #edf2ff; color: #2449bf; }
+.workflow-image-filters span { margin-left: 6px; font-variant-numeric: tabular-nums; }
+.workflow-file-name { font-size: 12px; }
+@media (prefers-reduced-motion: reduce) {
+  .workflow-progress-panel .workflow-live-label i { animation: none; }
+  .workflow-progress-track > div { transition: none; }
+}
 .workflow-next-action {
   display: flex;
   align-items: center;
@@ -707,6 +752,11 @@
   }
 }
 @media (max-width: 650px) {
+  .workflow-progress-panel { padding: 18px; }
+  .workflow-progress-heading { flex-direction: column; gap: 0; }
+  .workflow-progress-metrics { grid-template-columns: 1fr; gap: 18px; }
+  .workflow-progress-stages { gap: 7px; }
+  .workflow-progress-stages li { flex-direction: column; align-items: start; font-size: 12px; }
   .workflow-run-entry {
     flex-wrap: wrap;
   }

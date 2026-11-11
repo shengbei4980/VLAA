@@ -168,6 +168,8 @@ export interface WorkflowReview {
 export interface WorkflowItem {
   id: string;
   status: string;
+  file_name?: string | null;
+  cursor?: number;
   subject_ref?: string;
   image_id?: string;
   error_message?: string | null;
@@ -178,6 +180,8 @@ export interface WorkflowAttempt {
   id: string;
   node_id: string;
   status: string;
+  created_at?: string;
+  finished_at?: string | null;
   item_id?: string | null;
   error_message?: string | null;
   [key: string]: unknown;
@@ -188,6 +192,26 @@ export interface WorkflowArtifact {
   type?: string;
   kind?: string;
   [key: string]: unknown;
+}
+
+export interface WorkflowProgress {
+  measured_at: string;
+  automatic_applicable: boolean;
+  total_images: number;
+  ready_images: number;
+  waiting_review_images: number;
+  failed_images: number;
+  excluded_images: number;
+  confirmed_images: number;
+  completed_steps: number;
+  total_steps: number;
+  percent: number | null;
+  processing_seconds: number;
+  sample_count: number;
+  average_image_seconds: number | null;
+  eta_seconds: number | null;
+  eta_state: "not_applicable" | "cancelled" | "complete" | "blocked" | "waiting_review" | "learning" | "overdue" | "estimated";
+  current: { node_id: string; node_type: string; item_id: string | null; image_index: number | null; file_name: string | null; elapsed_seconds: number } | null;
 }
 
 export interface WorkflowRun {
@@ -208,7 +232,8 @@ export interface WorkflowRun {
   items: WorkflowItem[];
   attempts: WorkflowAttempt[];
   artifacts: WorkflowArtifact[];
-  reviews: WorkflowReview[];
+  reviews: Array<Pick<WorkflowReview, "id" | "item_id" | "status" | "revision">>;
+  progress?: WorkflowProgress;
   events: Array<Record<string, unknown>>;
   batch_counts: Record<string, number>;
   created_at?: string;

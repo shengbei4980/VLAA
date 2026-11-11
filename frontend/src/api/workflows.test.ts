@@ -4,6 +4,12 @@ import { visionApi, type VisionEndpoint } from "./vision";
 
 afterEach(() => vi.unstubAllGlobals());
 describe("workflow HTTP contracts", () => {
+  it("polls lightweight summaries instead of downloading annotation payloads", async () => {
+    const fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) });
+    vi.stubGlobal("fetch", fetch);
+    await workflowApi.run("run/one");
+    expect(fetch.mock.calls[0][0]).toContain("/api/workflows/runs/run%2Fone?summary=true");
+  });
   it("deletes and restores run records through explicit HTTP methods", async () => {
     const fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) });
     vi.stubGlobal("fetch", fetch);

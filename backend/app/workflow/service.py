@@ -8,7 +8,7 @@ from typing import Any
 
 from sqlalchemy import exists, func, select, update
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import aliased
+from sqlalchemy.orm import aliased, defer
 
 from app.agent.redaction import redact_text
 from app.core.errors import ConflictError, DomainError, NotFoundError, ValidationError
@@ -28,6 +28,7 @@ from app.workflow.schemas import (
     NodeDefinition, ProfileCreate, ReviewDecision, ReviewDraft, RunCreate, TemplateCreate,
 )
 from app.workflow.templates import builtin_templates
+from app.workflow.progress import run_progress
 
 logger = logging.getLogger("ywa.workflow")
 TERMINAL = {"completed", "cancelled"}
@@ -998,9 +999,9 @@ class WorkflowService:
             return list(session.scalars(select(WorkflowRun.id).where(WorkflowRun.deleted_at.is_(None), WorkflowRun.status.in_(
                 ["pending", "running", "waiting_task", "awaiting_review", "cancelling"])).order_by(WorkflowRun.created_at)))
 
-    def get_run(self, run_id):
+    def get_run(self, run_id, *, summary=False):
         with self.session_factory() as session:
-            return self._run_response(session, self._row(session, WorkflowRun, run_id))
+            return self._run_response(session, self._row(session, WorkflowRun, run_id), compact=summary)
 
     def export_download(self, run_id):
         with self.session_factory() as session:
@@ -1065,7 +1066,7 @@ class WorkflowService:
             return [self._run_response(session, row, details=False) for row in session.scalars(select(WorkflowRun).where(selection).order_by(
                 WorkflowRun.created_at.desc()).limit(limit))]
 
-    def _run_response(self, session, run, details=True):
+    def _run_response(self, session, run, details=True, *, compact=False):
         items = list(session.scalars(select(WorkflowItem).where(WorkflowItem.run_id == run.id).order_by(WorkflowItem.created_at, WorkflowItem.id)))
         counts = {"total": len(items), "approved": 0, "background": 0, "excluded": 0, "pending": 0, "failed": 0}
         for item in items:
@@ -1079,19 +1080,33 @@ class WorkflowService:
                   "deleted_at": run.deleted_at, "can_delete": self._can_delete_run(session, run)}
         if not details:
             return result
-        attempts = list(session.scalars(select(WorkflowAttempt).where(WorkflowAttempt.run_id == run.id).order_by(WorkflowAttempt.created_at, WorkflowAttempt.id)))
-        artifacts = list(session.scalars(select(WorkflowArtifact).where(WorkflowArtifact.run_id == run.id).order_by(WorkflowArtifact.created_at, WorkflowArtifact.id)))
+        attempts = list(session.scalars(select(WorkflowAttempt).options(defer(WorkflowAttempt.input_json)).where(WorkflowAttempt.run_id == run.id).order_by(WorkflowAttempt.created_at, WorkflowAttempt.id)))
+        artifacts_query = select(WorkflowArtifact).where(WorkflowArtifact.run_id == run.id).order_by(WorkflowArtifact.created_at, WorkflowArtifact.id)
+        if compact:
+            artifacts_query = artifacts_query.options(defer(WorkflowArtifact.payload_json))
+        artifacts = list(session.scalars(artifacts_query))
+        reviews = list(session.scalars(select(WorkflowReview).where(WorkflowReview.run_id == run.id).order_by(WorkflowReview.created_at, WorkflowReview.id)))
+        events_query = select(WorkflowEvent).where(WorkflowEvent.run_id == run.id)
+        events = list(session.scalars(events_query.order_by(WorkflowEvent.created_at.desc(), WorkflowEvent.id.desc()).limit(100))) if compact else list(session.scalars(events_query.order_by(WorkflowEvent.created_at, WorkflowEvent.id)))
+        if compact:
+            events.reverse()
+        image_names = dict(session.execute(select(ImageItem.id, ImageItem.file_name).where(ImageItem.id.in_([item.subject_ref for item in items]))).all())
+        progress = run_progress(run, items, attempts)
+        if progress["current"] and progress["current"]["image_index"]:
+            progress["current"]["file_name"] = image_names.get(items[progress["current"]["image_index"] - 1].subject_ref)
         result.update(profile_snapshot=run.profile_snapshot, template_snapshot=run.template_snapshot,
-            context=run.context_json, reserved_requests=run.request_count,
+            context=run.context_json, reserved_requests=run.request_count, progress=progress,
             request_count=sum((row.output_json or {}).get("request_count", 0) for row in attempts if row.status == "completed"),
-            items=[{"id": row.id, "subject_ref": row.subject_ref, "status": row.status, "cursor": row.cursor,
+            items=[{"id": row.id, "subject_ref": row.subject_ref, "file_name": image_names.get(row.subject_ref), "status": row.status, "cursor": row.cursor,
                     "confirmed": row.confirmed, "disposition": row.disposition, "error_message": row.error_message,
-                    "context": {key: value for key, value in row.context_json.items() if key != "image_path"}} for row in items],
+                    "context": {key: value for key, value in row.context_json.items() if key != "image_path" and (not compact or key not in {"existing_annotations", "existing_review"})}} for row in items],
             attempts=[{"id": row.id, "item_id": row.item_id, "node_id": row.node_id, "node_type": row.node_type,
                        "attempt": row.attempt, "status": row.status, "error_message": row.error_message,
-                       "task_id": row.reserved_task_id, "task_kind": row.task_kind, "output": row.output_json} for row in attempts],
+                       "created_at": row.created_at, "finished_at": row.finished_at,
+                       "task_id": row.reserved_task_id, "task_kind": row.task_kind,
+                       "output": {key: value for key, value in (row.output_json or {}).items() if key in {"model_id", "snapshot_id", "next_run_id", "request_count", "retry_at"}} if compact else row.output_json} for row in attempts],
             artifacts=[{"id": row.id, "item_id": row.item_id, "kind": row.kind, "version": row.version,
-                        "sha256": row.sha256, "payload": row.payload_json, "parent_ids": row.parent_ids_json} for row in artifacts],
-            reviews=[self._review_response(session, row) for row in session.scalars(select(WorkflowReview).where(WorkflowReview.run_id == run.id).order_by(WorkflowReview.created_at))],
-            events=[{"id": row.id, "kind": row.kind, "payload": row.payload_json, "created_at": row.created_at} for row in session.scalars(select(WorkflowEvent).where(WorkflowEvent.run_id == run.id).order_by(WorkflowEvent.created_at, WorkflowEvent.id))])
+                        "sha256": row.sha256, **({} if compact else {"payload": row.payload_json}), "parent_ids": row.parent_ids_json} for row in artifacts],
+            reviews=[{"id": row.id, "item_id": row.item_id, "status": row.status, "revision": row.revision} if compact else self._review_response(session, row) for row in reviews],
+            events=[{"id": row.id, "kind": row.kind, "payload": row.payload_json, "created_at": row.created_at} for row in events])
         return result

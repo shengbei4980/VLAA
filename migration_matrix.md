@@ -200,6 +200,7 @@ This is a file-by-file distribution inventory, not proof of authorization or a r
 | `backend/app/workflow/runtime.py` | New |
 | `backend/app/workflow/schemas.py` | New |
 | `backend/app/workflow/service.py` | New |
+| `backend/app/workflow/progress.py` | New |
 | `backend/app/workflow/templates.py` | New |
 | `backend/pyproject.toml` | Inherited |
 | `backend/requirements-dev.txt` | Inherited |
@@ -255,6 +256,7 @@ This is a file-by-file distribution inventory, not proof of authorization or a r
 | `backend/tests/test_workflow_exports.py` | New |
 | `backend/tests/test_workflow_labelme_export.py` | New |
 | `backend/tests/test_workflow_previews.py` | New |
+| `backend/tests/test_workflow_progress.py` | New |
 | `backend/tests/test_workflow_project_flow.py` | New |
 | `backend/tests/test_workflow_projects.py` | New |
 | `backend/tests/test_workflow_review_save_roundtrip.py` | New |
@@ -262,6 +264,7 @@ This is a file-by-file distribution inventory, not proof of authorization or a r
 | `backend/tests/workflow_test_helpers.py` | New |
 | `docs/INSTALL.md` | New |
 | `docs/USER_GUIDE.md` | New |
+| `docs/OPTIMIZATION_REVIEW.md` | New |
 | `docs/agent.md` | Modified |
 | `docs/dependency-audit.md` | Inherited |
 | `docs/provenance/UPSTREAM_AUTHORIZATION.md` | Inherited |
@@ -379,6 +382,8 @@ This is a file-by-file distribution inventory, not proof of authorization or a r
 | `frontend/src/workflow/TemplateForm.tsx` | New |
 | `frontend/src/workflow/WorkflowRunHistory.test.tsx` | New |
 | `frontend/src/workflow/WorkflowRunHistory.tsx` | New |
+| `frontend/src/workflow/WorkflowProgressPanel.tsx` | New |
+| `frontend/src/workflow/WorkflowProgressPanel.test.tsx` | New |
 | `frontend/src/workflow/annotation-preview.test.ts` | New |
 | `frontend/src/workflow/annotation-preview.ts` | New |
 | `frontend/src/workflow/masks.test.ts` | New |

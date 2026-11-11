@@ -86,8 +86,8 @@ def prepare_run(payload: RunCreate, request: Request, service: WorkflowService =
 
 
 @router.get("/runs/{run_id}")
-def run(run_id: str, service: WorkflowService = Depends(get_workflow_service)):
-    return service.get_run(run_id)
+def run(run_id: str, summary: bool = Query(default=False), service: WorkflowService = Depends(get_workflow_service)):
+    return service.get_run(run_id, summary=summary)
 
 
 @router.delete("/runs/{run_id}")

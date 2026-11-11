@@ -22,6 +22,84 @@ vi.mock("./ArtifactReviewView", () => ({
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true;
 describe("batch review barrier", () => {
+  it("does not let an old poll overwrite a newer cancellation response", async () => {
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+    const base = { id: "race", status: "running", profile_snapshot: {}, template_snapshot: { name: "visual", nodes: [] }, context: {}, items: [], attempts: [], artifacts: [], reviews: [], events: [], batch_counts: {} } as unknown as WorkflowRun;
+    let resolvePoll!: (value: WorkflowRun) => void;
+    vi.mocked(workflowApi.run).mockResolvedValueOnce(base)
+      .mockImplementationOnce(() => new Promise((resolve) => { resolvePoll = resolve; }))
+      .mockResolvedValueOnce({ ...base, status: "cancelled" });
+    vi.mocked(workflowApi.controlRun).mockResolvedValue({ ...base, status: "cancelled" });
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<WorkflowRunView runId="race" onBack={vi.fn()} onOpenTraining={vi.fn()} onOpenModel={vi.fn()} />));
+      await act(async () => vi.advanceTimersByTimeAsync(2000));
+      const cancel = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent === "取消运行")!;
+      await act(async () => cancel.click());
+      await act(async () => resolvePoll(base));
+      expect(container.querySelector(".workflow-status-badge")?.textContent).toBe("已取消");
+    } finally {
+      act(() => root.unmount());
+      vi.useRealTimers();
+    }
+  });
+  it("filters large batches without losing original image numbers and limits mounted rows", async () => {
+    vi.clearAllMocks();
+    vi.mocked(workflowApi.run).mockResolvedValue({
+      id: "batch", status: "needs_attention", profile_snapshot: {},
+      template_snapshot: { name: "visual", nodes: [] }, context: {},
+      items: Array.from({ length: 120 }, (_, index) => ({ id: `item-${index}`, status: index === 109 ? "failed" : "pending", file_name: `tower-${index}.png` })),
+      attempts: [], artifacts: [], reviews: [], events: [], batch_counts: {},
+    } as unknown as WorkflowRun);
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    await act(async () => root.render(<WorkflowRunView runId="batch" onBack={vi.fn()} onOpenTraining={vi.fn()} onOpenModel={vi.fn()} />));
+    expect(container.querySelectorAll(".workflow-item")).toHaveLength(50);
+    const filter = Array.from(container.querySelectorAll<HTMLButtonElement>(".workflow-image-filters button")).find((button) => button.textContent?.startsWith("失败"))!;
+    act(() => filter.click());
+    expect(container.querySelectorAll(".workflow-item")).toHaveLength(1);
+    expect(container.querySelector(".workflow-item")?.textContent).toContain("第 110 张图片");
+    expect(container.querySelector(".workflow-item")?.textContent).toContain("tower-109.png");
+    act(() => root.unmount());
+  });
+
+  it("stops background polling for closed runs and while editing a review", async () => {
+    vi.useFakeTimers();
+    try {
+      for (const status of ["completed", "awaiting_review"]) {
+        vi.clearAllMocks();
+        vi.mocked(workflowApi.run).mockResolvedValue({
+          id: "quiet", status, profile_snapshot: {}, template_snapshot: { name: "visual", nodes: [] },
+          context: {}, items: [], attempts: [], artifacts: [], reviews: [], events: [], batch_counts: {},
+        } as unknown as WorkflowRun);
+        const root = createRoot(document.createElement("div"));
+        await act(async () => root.render(<WorkflowRunView runId="quiet" initialReviewId={status === "awaiting_review" ? "review" : undefined} onBack={vi.fn()} onOpenTraining={vi.fn()} onOpenModel={vi.fn()} />));
+        await act(async () => vi.advanceTimersByTimeAsync(8000));
+        expect(workflowApi.run).toHaveBeenCalledTimes(1);
+        act(() => root.unmount());
+      }
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("does not label an entire batch step complete after only one image", async () => {
+    vi.clearAllMocks();
+    vi.mocked(workflowApi.run).mockResolvedValue({
+      id: "partial", status: "running", profile_snapshot: {},
+      template_snapshot: { name: "visual", nodes: [{ id: "check", type: "vision_review", scope: "item" }] }, context: {},
+      items: [{ id: "one", status: "awaiting_review" }, { id: "two", status: "pending" }],
+      attempts: [{ id: "attempt", item_id: "one", node_id: "check", status: "completed" }],
+      artifacts: [], reviews: [], events: [], batch_counts: {},
+    } as unknown as WorkflowRun);
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    await act(async () => root.render(<WorkflowRunView runId="partial" onBack={vi.fn()} onOpenTraining={vi.fn()} onOpenModel={vi.fn()} />));
+    const step = container.querySelector<HTMLElement>(".workflow-step-list > li")!;
+    expect(step.dataset.status).toBe("pending");
+    expect(step.textContent).toContain("已完成 1 张 · 尚未到此步 1 张");
+    act(() => root.unmount());
+  });
   it("opens a dataset-linked review and notifies the dataset when it is saved", async () => {
     vi.clearAllMocks();
     vi.mocked(workflowApi.run).mockResolvedValue({

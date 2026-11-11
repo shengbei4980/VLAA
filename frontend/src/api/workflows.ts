@@ -119,7 +119,7 @@ export const workflowApi = {
   restoreRun: (id: string) =>
     workflowRequest<WorkflowRun>(`/runs/${encodeURIComponent(id)}/restore`, {}),
   run: (id: string) =>
-    workflowRequest<WorkflowRun>(`/runs/${encodeURIComponent(id)}`),
+    workflowRequest<WorkflowRun>(`/runs/${encodeURIComponent(id)}?summary=true`),
   prepareRun: (body: WorkflowRunRequest) =>
     workflowRequest<PreparedWorkflowRun>("/runs/prepare", body),
   createRun: (body: WorkflowRunRequest) =>
