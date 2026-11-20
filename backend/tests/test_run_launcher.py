@@ -55,6 +55,8 @@ def test_startup_failure_cleans_up_its_process(monkeypatch, tmp_path):
     monkeypatch.setattr(launcher, "ROOT", tmp_path)
     monkeypatch.setattr(launcher, "is_ready", lambda port: False)
     process = Mock()
+    # Popen is mocked here even on hosts without the Windows process flags.
+    monkeypatch.setattr(launcher.subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
     monkeypatch.setattr(launcher.subprocess, "Popen", Mock(return_value=process))
     monkeypatch.setattr(launcher, "wait_for_service", Mock(side_effect=RuntimeError("Startup failed")))
     stop = Mock()
