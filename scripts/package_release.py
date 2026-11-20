@@ -64,6 +64,9 @@ def is_source_path(path: PurePosixPath) -> bool:
         return False
     if name.startswith(".ywa-storage") or name in {".coverage", ".ds_store", "sha256sums.txt"}:
         return False
+    # The reviewed six-class forest ships with the land-cover UI in every distribution.
+    if path == PurePosixPath("backend/app/hybrid_landcover/weights/panan_s2_2025.xml.gz"):
+        return True
     if any(suffix.lower() in EXCLUDED_SUFFIXES for suffix in path.suffixes):
         return False
     return (len(parts) == 1 and path.name in ROOT_FILES) or parts[0] in SOURCE_DIRECTORIES

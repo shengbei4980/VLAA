@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import type { AppLocale } from "../locale";
 import { localeText } from "../locale";
 
-export type StarterSection = "workspace" | "workflow" | "training" | "models" | "agent" | "logs" | "settings";
+export type StarterSection = "workspace" | "workflow" | "hybrid" | "training" | "models" | "agent" | "logs" | "settings";
 
 interface Props {
   active: StarterSection;
@@ -15,6 +15,7 @@ interface Props {
 const navigation: Array<{ id: StarterSection; label: string; icon: ReactNode }> = [
   { id: "workspace", label: "数据集", icon: <DatasetIcon /> },
   { id: "workflow", label: "工作流", icon: <WorkflowIcon /> },
+  { id: "hybrid", label: "遥感联合标注", icon: <LayersIcon /> },
   { id: "training", label: "训练", icon: <TrainingIcon /> },
   { id: "models", label: "模型", icon: <ModelIcon /> },
   { id: "agent", label: "智能体", icon: <AgentIcon /> },
@@ -31,6 +32,7 @@ export function StarterShell({ active, datasetName, onNavigate, locale = "zh", c
   const labels: Record<StarterSection, string> = {
     workspace: text.datasets,
     workflow: locale === "zh" ? "工作流" : "Workflows",
+    hybrid: locale === "zh" ? "遥感联合标注" : "Hybrid land cover",
     training: text.training,
     models: text.models,
     agent: text.agent,
@@ -98,6 +100,9 @@ function LocalIcon() { return <svg viewBox="0 0 24 24" aria-hidden="true"><path 
 function SettingsIcon() { return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Z" /><path d="m19 13.5 1.2 1-.2 1.7-1.5 1-1.7-.6-1 1.1.1 1.8-1.5.8-1.4-1.1h-1.5L10 20.3l-1.6-.8.1-1.8-1-1.1-1.7.6-1.5-1 .2-1.7 1.2-1v-1.5l-1.2-1 .2-1.7 1.5-1 1.7.6 1-1.1-.1-1.8L10 5l1.4 1.1h1.5L14.3 5l1.6.8-.1 1.8 1 1.1 1.7-.6 1.5 1-.2 1.7-1.2 1Z" /></svg>; }
 function LogsIcon() { return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4.5h12v15H6z" /><path d="M9 8h6M9 12h6M9 16h4" /></svg>; }
 function AgentIcon() { return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4.5a3 3 0 1 1 0 6 3 3 0 0 1 0-6Z" /><path d="M5.5 19c.8-3.2 3.3-5 6.5-5s5.7 1.8 6.5 5" /><path d="M18 8.5h2.5M3.5 8.5H6M12 2v1.5" /></svg>; }
+function LayersIcon() {
+  return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 8 9-5 9 5-9 5-9-5Zm0 4 9 5 9-5M3 16l9 5 9-5" /></svg>;
+}
 function WorkflowIcon() {
   return <svg viewBox="0 0 24 24" aria-hidden="true">
     <rect x="3" y="3" width="6" height="6" rx="1.5" />
