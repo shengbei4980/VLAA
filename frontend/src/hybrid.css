@@ -1,0 +1,39 @@
+.hybrid-page {
+  width: min(1120px, 100%);
+  margin: 0 auto;
+  padding: clamp(18px, 3vw, 38px);
+  display: grid;
+  gap: 22px;
+  color: #172033;
+}
+.hybrid-page h1 { font-size: clamp(24px, 3vw, 34px); letter-spacing: -.035em; }
+.hybrid-page h2 { margin: 0; font-size: 18px; }
+.hybrid-page p, .hybrid-page small { color: #526178; line-height: 1.55; }
+.hybrid-page header p { margin-top: 6px; }
+.hybrid-form, .hybrid-stack { display: grid; gap: 16px; }
+.hybrid-card { background: #fff; border: 1px solid #dce2ec; border-radius: 12px; padding: clamp(16px, 2.3vw, 26px); min-width: 0; }
+.hybrid-grid { display: grid; gap: 14px 18px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); align-items: start; }
+.hybrid-field { display: grid; align-content: start; gap: 5px; min-width: 0; font-size: 13px; font-weight: 600; }
+.hybrid-field small { font-weight: 400; }
+.hybrid-field input, .hybrid-field select { width: 100%; min-height: 40px; min-width: 0; border: 1px solid #bdc8d8; border-radius: 7px; padding: 7px 9px; color: #18273a; background: white; }
+.hybrid-field input::file-selector-button { border: none; background: #edf2fa; color: #28436a; padding: 3px 7px; border-radius: 4px; margin-inline-end: 8px; }
+.hybrid-fieldset { min-width: 0; margin: 0; border: 0; padding: 0; }
+.hybrid-role { border: 1px solid #dce2ec; padding: 10px 14px 14px; border-radius: 8px; }
+.hybrid-role legend { font-size: 14px; font-weight: 700; padding: 0 4px; }
+.hybrid-choice, .hybrid-tools, .hybrid-status, .hybrid-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; }
+.hybrid-choice label { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; font-weight: 600; }
+.hybrid-status { font-size: 13px; }
+.hybrid-status span { display: inline-flex; align-items: center; gap: 7px; }
+.hybrid-status i, .hybrid-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; }
+.hybrid-status i { border-radius: 50%; background: #bc6b0c; }
+.hybrid-status .ready { background: #248762; }
+.hybrid-page .hybrid-primary { display: inline-block; border: 0; text-decoration: none; border-radius: 7px; padding: 10px 17px; background: #3157d5; color: white; font-weight: 650; font-size: 14px; }
+.hybrid-primary:disabled { opacity: .6; }
+.hybrid-page .hybrid-link { color: #254bb8; background: transparent; border: 0; padding: 3px 0; text-decoration: underline; text-underline-offset: 2px; }
+.hybrid-alert { padding: 10px 13px; border-radius: 7px; color: #862d22; background: #fff1ee; overflow-wrap: anywhere; }
+.hybrid-figures { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); }
+.hybrid-figures figure { margin: 0; min-width: 0; overflow: hidden; border-radius: 8px; border: 1px solid #e0e5ed; }
+.hybrid-figures img { display: block; width: 100%; max-height: 360px; background: #f1f4f8; object-fit: contain; image-rendering: pixelated; }
+.hybrid-figures figcaption { padding: 8px 12px; font-size: 13px; font-weight: 600; }
+.hybrid-legend { font-size: 13px; }
+.hybrid-legend span { display: inline-flex; align-items: center; gap: 6px; }

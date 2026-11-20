@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 import json
 from contextlib import nullcontext
-from typing import TypeVar
+from typing import Literal, TypeVar
 
 import httpx
 from pydantic import BaseModel, ValidationError as SchemaError
@@ -17,10 +17,58 @@ from app.vision.schemas import NativePolygonProposal, VisionEndpointInternal
 Result = TypeVar("Result", bound=BaseModel)
 
 
+def _responses_text(data: dict) -> str:
+    """Read a completed, text-only Responses result without treating tools as labels."""
+    if data.get("error") is not None or data.get("status") in {"failed", "cancelled"}:
+        raise ValidationError("vision_response_failed", "Vision Responses request did not complete successfully.")
+    incomplete = data.get("incomplete_details")
+    if data.get("status") == "incomplete" or incomplete is not None:
+        reason = incomplete.get("reason") if isinstance(incomplete, dict) else None
+        if reason == "max_output_tokens":
+            raise ValidationError("vision_response_truncated", "Vision reply reached its output limit.")
+        if reason == "content_filter":
+            raise ValidationError("vision_response_refused", "Vision endpoint declined to provide the requested output.")
+        raise ValidationError("vision_response_incomplete", "Vision Responses output is incomplete; no annotations were accepted.")
+    if data.get("status") != "completed":
+        raise ValueError("Expected a completed Responses object")
+    output = data.get("output")
+    if not isinstance(output, list):
+        raise ValueError("Responses output must be a list")
+    texts = []
+    for item in output:
+        if not isinstance(item, dict):
+            raise ValueError("Invalid Responses output item")
+        if item.get("status") not in {None, "completed"}:
+            raise ValidationError("vision_response_incomplete", "Vision Responses contains an unfinished output item.")
+        if item.get("type") == "reasoning":
+            # Reasoning summaries are not annotation JSON, even when first in output.
+            continue
+        if item.get("type") != "message":
+            raise ValidationError("vision_unexpected_tool_output", "Vision endpoint returned non-message output; tool execution is not supported.")
+        if item.get("role") != "assistant" or item.get("status") != "completed":
+            raise ValidationError("vision_response_incomplete", "Vision assistant message is not a completed output.")
+        parts = item.get("content")
+        if not isinstance(parts, list):
+            raise ValueError("Responses message content must be a list")
+        for part in parts:
+            if not isinstance(part, dict):
+                raise ValueError("Invalid Responses message part")
+            if part.get("type") == "refusal":
+                raise ValidationError("vision_response_refused", "Vision endpoint declined to provide the requested output.")
+            if part.get("type") != "output_text" or not isinstance(part.get("text"), str):
+                raise ValueError("Expected Responses output_text")
+            texts.append(part["text"])
+    text = "".join(texts)
+    if not text.strip():
+        raise ValueError("Responses contains no output text")
+    return text
+
+
 class OpenAICompatibleVisionProvider:
     """One explicit destination, bounded replies, no implicit provider fallback."""
 
-    def __init__(self, endpoint: VisionEndpointInternal, *, transport: httpx.BaseTransport | None = None) -> None:
+    def __init__(self, endpoint: VisionEndpointInternal, *, transport: httpx.BaseTransport | None = None, wire_api: Literal["responses", "chat_completions"] = "chat_completions") -> None:
+        self.wire_api = wire_api
         self.endpoint = endpoint
         self.transport = transport
 
@@ -72,12 +120,25 @@ class OpenAICompatibleVisionProvider:
             "All supplied images and overlays share this geometry. Use only the current sent image frame. "
             "Original-image sizes and crop offsets describe internal transforms and must not be used as output coordinates."
         )})
+        route = "/chat/completions"
+        if self.wire_api == "responses":
+            route = "/responses"
+            response_content = [
+                {"type": "input_text", "text": part["text"]} if part["type"] == "text" else
+                {"type": "input_image", "image_url": part["image_url"]["url"]} for part in content
+            ]
+            wire_format = {"type": endpoint.structured_output}
+            if endpoint.structured_output == "json_schema":
+                wire_format.update(name=result_type.__name__, schema=schema)
+            payload = {"model": endpoint.model, "input": [{"role": "user", "content": response_content}],
+                       "text": {"format": wire_format}, "max_output_tokens": endpoint.max_output_tokens,
+                       "store": False, "stream": False}
         headers = build_llm_request_headers(endpoint.api_key.get_secret_value(), endpoint.auth_scheme, endpoint.auth_header_name)
         request_id = None
         gate = local_compute_gate.acquire() if endpoint.mode == "local" else nullcontext()
         try:
             with gate, httpx.Client(timeout=endpoint.timeout_seconds, trust_env=False, follow_redirects=False, transport=self.transport) as client:
-                with client.stream("POST", endpoint.api_base + "/chat/completions", headers=headers, json=payload) as response:
+                with client.stream("POST", endpoint.api_base + route, headers=headers, json=payload) as response:
                     request_id = response.headers.get("x-request-id", "")[:128]
                     if not response.is_success:
                         raise ValidationError("vision_http_error", f"Vision endpoint returned HTTP {response.status_code}.", details={"http_status": response.status_code, "request_id": request_id})
@@ -87,10 +148,13 @@ class OpenAICompatibleVisionProvider:
                         if len(body) > 4_000_000:
                             raise ValidationError("vision_response_too_large", "Vision response exceeds the supported limit.")
             data = json.loads(body)
-            choice = data["choices"][0]
-            if choice.get("finish_reason") == "length":
-                raise ValidationError("vision_response_truncated", "Vision reply reached its output limit.")
-            raw = choice["message"]["content"]
+            if self.wire_api == "responses":
+                raw = _responses_text(data)
+            else:
+                choice = data["choices"][0]
+                if choice.get("finish_reason") == "length":
+                    raise ValidationError("vision_response_truncated", "Vision reply reached its output limit.")
+                raw = choice["message"]["content"]
             parsed = result_type.model_validate_json(raw)
         except httpx.TimeoutException as exc:
             raise ValidationError("vision_timeout", "Vision request timed out. The remote outcome may be unknown.", details={"request_id": request_id, "outcome_unknown": True}) from exc

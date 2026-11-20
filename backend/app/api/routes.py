@@ -7,6 +7,7 @@ from app.logs.router import router as logs_router
 from app.video_import.router import router as video_import_router
 from app.dataset.annotation.review_router import router as review_router
 from app.workflow.router import router as workflow_router
+from app.hybrid_landcover.router import router as hybrid_router
 from app.vision.router import router as vision_router
 from app.dataset.exchange.labelme_router import router as labelme_router
 from app.storage_settings.router import router as storage_router
@@ -29,3 +30,4 @@ api_router.include_router(vision_router)
 api_router.include_router(labelme_router)
 api_router.include_router(storage_router)
 api_router.include_router(agent_router)
+api_router.include_router(hybrid_router)

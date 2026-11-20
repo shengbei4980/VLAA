@@ -6,7 +6,9 @@ VLAA is a local image annotation workbench. A vision-language model proposes obj
 
 Reusable class and model profiles support different subjects, such as tower components, street scenes, or satellite RGB images. Each project can have its own output root.
 
-**v0.2.0 is a source installation package.** Python, Node.js, vision services, and model weights are configured separately.
+**v0.2.0 is a source installation package.** Install Python and Node.js and configure your vision services and SAM weights locally. The six-class Sentinel-2 random forest ships with the repository.
+
+Open **Hybrid land-cover annotation** to merge GPT polygons, DeepSeek-guided SAM masks and ten-band surface reflectance into a reviewable LabelMe draft. You can generate proposals with two vision endpoints or import previously generated drafts. [Inputs, model and workflow](docs/HYBRID_LANDCOVER.md)
 
 ## Main features
 
@@ -55,7 +57,7 @@ LabelMe JSON includes the original image. Mask shapes require LabelMe 5.8.0 or n
 
 The frontend binds to `127.0.0.1:5173` and the backend to `127.0.0.1:8000` by default. Workbench data is local. Selecting a remote vision endpoint sends the selected images to that endpoint, as shown in the launch preview.
 
-Project selection happens before a run. JSON, PNG, model, and evaluation outputs inherit the selected project root and are separated by run ID. API keys, datasets, model weights, and runtime records are excluded from the source package.
+Project selection happens before a run. JSON, PNG, model, and evaluation outputs inherit the selected project root and are separated by run ID. The source package includes the dedicated Sentinel-2 forest. API keys, datasets, other model weights and runtime records stay local.
 
 Local training and evaluation use Ultralytics YOLO. Other engines require their own adapters. A configured HTTP vision service must implement the expected image and coordinate contract; a successful connection test alone does not establish annotation quality.
 

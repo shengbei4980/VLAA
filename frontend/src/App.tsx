@@ -8,6 +8,7 @@ import { ModelsView } from "./pages/ModelsView";
 import { SettingsView } from "./pages/SettingsView";
 import { LogsView } from "./pages/LogsView";
 import { AgentView, type AgentPageContext } from "./pages/AgentView";
+import { HybridView } from "./pages/HybridView";
 import { WorkflowView } from "./pages/WorkflowView";
 import { StandaloneMaskEditor, type AnnotationRegions } from "./annotation/StandaloneMaskEditor";
 import { visionApi } from "./api/vision";
@@ -20,7 +21,7 @@ import { ImportCenterModal } from "./components/ImportCenterModal";
 import { readLocale, saveLocale, type AppLocale } from "./locale";
 import type { Annotation, BBox, ClassLabel, Dataset, DatasetQualityReport, DuplicateReport, ImageItem, SamCapabilities, SamPrediction, SplitName, TaskType, ValidationReport } from "./types";
 
-type View = "workspace" | "workflow" | "annotation" | "training" | "models" | "agent" | "settings-llm" | "settings-sam" | "settings-vision" | "settings-storage" | "settings-language" | "logs";
+type View = "workspace" | "workflow" | "hybrid" | "annotation" | "training" | "models" | "agent" | "settings-llm" | "settings-sam" | "settings-vision" | "settings-storage" | "settings-language" | "logs";
 type CardReportKind = "validation" | "quality" | "duplicates";
 const ANNOTATION_IMAGE_PAGE_SIZE = 20;
 
@@ -34,7 +35,10 @@ export default function App() {
   const openImageGeneration = useRef(0);
   currentImage.current = selectedImage;
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
-  const [view, setView] = useState<View>(() => window.location.hash.startsWith("#workflow") ? "workflow" : "workspace");
+  const [view, setView] = useState<View>(() => {
+    if (window.location.hash === "#hybrid") return "hybrid";
+    return window.location.hash.startsWith("#workflow") ? "workflow" : "workspace";
+  });
   const [activeClassId, setActiveClassId] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -92,7 +96,11 @@ export default function App() {
     saveLocale(locale);
   }, [locale]);
   useEffect(() => {
-    if (view !== "workflow" && window.location.hash.startsWith("#workflow")) window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+    if (view === "hybrid") {
+      window.history.replaceState(null, "", "#hybrid");
+      return;
+    }
+    if (window.location.hash === "#hybrid" || (view !== "workflow" && window.location.hash.startsWith("#workflow"))) window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
   }, [view]);
 
   useEffect(() => {
@@ -210,7 +218,7 @@ export default function App() {
         void loadDataset(datasets[0], section);
         return;
       }
-      const globalSection = section === "settings" || section === "logs" || section === "agent" || section === "workflow";
+      const globalSection = section === "settings" || section === "logs" || section === "agent" || section === "workflow" || section === "hybrid";
       if (!globalSection && section !== "workspace" && !selected) {
         setNotice("请先创建或选择一个数据集。");
         return;
@@ -391,7 +399,7 @@ export default function App() {
           onFocusModelConsumed={() => setFocusModelId(undefined)}
           onAskAgent={(model) => { setAgentFocus({ ...(model.dataset_id ? { dataset: { id: model.dataset_id, name: datasets.find((d) => d.id === model.dataset_id)?.name ?? model.dataset_id } } : {}), model: { id: model.id, name: model.name } }); setView("agent"); }}
         />
-      ) : view === "workflow" ? <WorkflowView initialDatasetId={workflowDatasetId} onEditImage={editDatasetImage} onDataChanged={() => void refreshDatasets().catch((reason: unknown) => setError(errorMessage(reason)))} onStorageSettings={() => setView("settings-storage")} onDirtyChange={setWorkflowDirty} datasets={datasets} onSettings={() => setView("settings-vision")} onOpenTraining={(datasetId, taskId) => void openAgentTrainingTask(datasetId, taskId)} onOpenModel={(datasetId, modelId) => void openAgentModel(datasetId, modelId)} /> : view === "settings-llm" || view === "settings-sam" || view === "settings-vision" || view === "settings-storage" || view === "settings-language" ? (
+      ) : view === "hybrid" ? <HybridView locale={locale} /> : view === "workflow" ? <WorkflowView initialDatasetId={workflowDatasetId} onEditImage={editDatasetImage} onDataChanged={() => void refreshDatasets().catch((reason: unknown) => setError(errorMessage(reason)))} onStorageSettings={() => setView("settings-storage")} onDirtyChange={setWorkflowDirty} datasets={datasets} onSettings={() => setView("settings-vision")} onOpenTraining={(datasetId, taskId) => void openAgentTrainingTask(datasetId, taskId)} onOpenModel={(datasetId, modelId) => void openAgentModel(datasetId, modelId)} /> : view === "settings-llm" || view === "settings-sam" || view === "settings-vision" || view === "settings-storage" || view === "settings-language" ? (
         <SettingsView
           tab={view === "settings-llm" ? "llm" : view === "settings-sam" ? "sam" : view === "settings-vision" ? "vision" : view === "settings-storage" ? "storage" : "language"}
           locale={locale}

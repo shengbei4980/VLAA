@@ -28,6 +28,7 @@ def test_source_archive_filters_runtime_files_and_matches_checksums(tmp_path, mo
     included = {
         "README.md", "run.py", "install.cmd", "start.cmd", "LICENSE", "NOTICE", ".gitattributes",
         "backend/app/workflow/new_feature.py", "backend/.env.example",
+        "backend/app/hybrid_landcover/weights/panan_s2_2025.xml.gz",
         "backend/alembic/versions/0021_new.py", "frontend/src/NewView.tsx",
         "frontend/package-lock.json", "scripts/setup.py", ".github/workflows/ci.yml",
         "docs/INSTALL.md", "docs/provenance/UPSTREAM_AUTHORIZATION.md",
@@ -40,6 +41,7 @@ def test_source_archive_filters_runtime_files_and_matches_checksums(tmp_path, mo
         "backend/starter.db", "backend/starter.db-wal", "backend/runtime.log",
         "backend/runtime.log.1", "frontend/.DS_Store", "backend/private.storage.tmp",
         "backend/weight.pt", "backend/weight.onnx", "docs/assets/hero.png",
+        "backend/app/hybrid_landcover/weights/other.xml.gz",
         "backend/service.key", "backend/service.pem", "backend/certificate.pfx",
         "docs/sample.svg", "docs/plans/internal.md", "release/old-manifest.json",
         "private.txt", ".ywa-storage.json",
